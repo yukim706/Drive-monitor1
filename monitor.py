@@ -5,9 +5,10 @@
 # 【セキュリティ】GAS_SECRET_TOKEN によるトークン検証付き
 # 【検知内容】削除 / 名前変更 / 新規追加
 # 【シート構成】1シート（ファイルリスト兼変更履歴）
-#   A:更新日時 B:ファイル名 C:変更前ファイル名 D:URL E:種別 F:フォルダパス
+#   A:更新日時 B:ファイル名 C:変更前ファイル名 D:URL E:種別 F:フォルダパス G:フォルダURL
 # 【文字色】新規=黒 / 削除=赤 / 名前変更=青
 # 【D列URL】ハイパーリンク付き・URL表示（タップで開く）
+# 【G列】フォルダURL（ハイパーリンク付き）
 # 【行数】不足時に自動拡張
 # ============================================================
 
@@ -47,15 +48,16 @@ EMAIL_TO         = os.environ['EMAIL_TO']
 FILE_SHEET       = 'ファイル一覧'
 
 # 列番号定数（1始まり）
-COL_UPDATED    = 1   # A: 更新日時
-COL_FILENAME   = 2   # B: ファイル名
-COL_BEFORE     = 3   # C: 変更前ファイル名
-COL_FILEURL    = 4   # D: URL
-COL_STATUS     = 5   # E: 種別
-COL_FOLDERPATH = 6   # F: フォルダパス
-TOTAL_COLS     = 6
+COL_UPDATED     = 1   # A: 更新日時
+COL_FILENAME    = 2   # B: ファイル名
+COL_BEFORE      = 3   # C: 変更前ファイル名
+COL_FILEURL     = 4   # D: URL
+COL_STATUS      = 5   # E: 種別
+COL_FOLDERPATH  = 6   # F: フォルダパス
+COL_FOLDERURL   = 7   # G: フォルダURL
+TOTAL_COLS      = 7
 
-HEADERS = ['更新日時', 'ファイル名', '変更前ファイル名', 'URL', '種別', 'フォルダパス']
+HEADERS = ['更新日時', 'ファイル名', '変更前ファイル名', 'URL', '種別', 'フォルダパス', 'フォルダURL']
 
 # ── 文字色定義
 COLOR_BLACK = {'red': 0.0, 'green': 0.0, 'blue': 0.0}
@@ -90,7 +92,7 @@ MIME_EXTENSIONS = {
     'image/png':  '.png',
 }
 
-# ── MIMEタイプ → URL生成
+# ── MIMEタイプ → ファイルURL生成
 def build_file_url(file_id, mime_type):
     urls = {
         'application/vnd.google-apps.document':     f'https://docs.google.com/document/d/{file_id}/edit',
@@ -99,6 +101,10 @@ def build_file_url(file_id, mime_type):
         'application/vnd.google-apps.drawing':      f'https://docs.google.com/drawings/d/{file_id}/edit',
     }
     return urls.get(mime_type, f'https://drive.google.com/file/d/{file_id}/view')
+
+# ── フォルダID → フォルダURL生成
+def build_folder_url(folder_id):
+    return f'https://drive.google.com/drive/folders/{folder_id}'
 
 # ── URLをHYPERLINK数式に変換（URLをそのまま表示・タップで開く）
 def make_hyperlink(url):
@@ -147,6 +153,7 @@ def get_all_files(folder_id, folder_path, result=None):
                 'mimeType':   mime,
                 'fileUrl':    build_file_url(f['id'], mime),
                 'folderPath': folder_path,
+                'folderUrl':  build_folder_url(folder_id),
             })
         page_token = response.get('nextPageToken')
         if not page_token:
@@ -205,7 +212,7 @@ def build_id_to_row_map(sheet):
 # ── 行に文字色を適用
 def apply_row_color(sheet, row_num, status):
     color = STATUS_COLOR.get(status, COLOR_BLACK)
-    range_str = f'A{row_num}:F{row_num}'
+    range_str = f'A{row_num}:G{row_num}'
     sheet.format(range_str, {
         'textFormat': {'foregroundColor': color}
     })
@@ -219,8 +226,9 @@ def update_row(sheet, row_num, now_str, file_data, status, before_name=''):
         make_hyperlink(file_data.get('fileUrl', '')),
         status,
         file_data.get('folderPath', ''),
+        make_hyperlink(file_data.get('folderUrl', '')),
     ]
-    range_str = f'A{row_num}:F{row_num}'
+    range_str = f'A{row_num}:G{row_num}'
     sheet.update(range_name=range_str, values=[values], value_input_option='USER_ENTERED')
     apply_row_color(sheet, row_num, status)
 
@@ -233,6 +241,7 @@ def append_new_row(sheet, now_str, file_data, status):
         make_hyperlink(file_data.get('fileUrl', '')),
         status,
         file_data.get('folderPath', ''),
+        make_hyperlink(file_data.get('folderUrl', '')),
     ]
     ensure_rows(sheet, 1)
     sheet.append_row(row, value_input_option='USER_ENTERED')
@@ -259,6 +268,7 @@ def detect_changes(previous_files, current_files):
                 'beforeName': pf['fileName'],
                 'fileUrl':    cf.get('fileUrl', ''),
                 'folderPath': cf.get('folderPath', ''),
+                'folderUrl':  cf.get('folderUrl', ''),
                 'mimeType':   cf.get('mimeType', ''),
             })
 
@@ -280,7 +290,8 @@ def build_email_body(deleted, renamed, added):
                 f"  ファイル名  ：{f.get('fileName', '')}",
                 f"  URL        ：{f.get('fileUrl', '')}",
                 f"  フォルダパス：{f.get('folderPath', '')}",
-                f"  種別       ：削除", ''
+                f"  フォルダURL ：{f.get('folderUrl', '')}",
+                "  種別       ：削除", ''
             ]
 
     if renamed:
@@ -291,7 +302,8 @@ def build_email_body(deleted, renamed, added):
                 f"  変更前ファイル名：{f.get('beforeName', '')}",
                 f"  URL            ：{f.get('fileUrl', '')}",
                 f"  フォルダパス   ：{f.get('folderPath', '')}",
-                f"  種別           ：ファイル名変更", ''
+                f"  フォルダURL    ：{f.get('folderUrl', '')}",
+                "  種別           ：ファイル名変更", ''
             ]
 
     if added:
@@ -301,7 +313,8 @@ def build_email_body(deleted, renamed, added):
                 f"  ファイル名  ：{f.get('fileName', '')}",
                 f"  URL        ：{f.get('fileUrl', '')}",
                 f"  フォルダパス：{f.get('folderPath', '')}",
-                f"  種別       ：新規", ''
+                f"  フォルダURL ：{f.get('folderUrl', '')}",
+                "  種別       ：新規", ''
             ]
 
     return '\n'.join(lines)
@@ -367,12 +380,13 @@ def monitor_folder():
                 make_hyperlink(f.get('fileUrl', '')),
                 '正常',
                 f.get('folderPath', ''),
+                make_hyperlink(f.get('folderUrl', '')),
             ])
         if rows:
             ensure_rows(sheet, len(rows))
             sheet.append_rows(rows, value_input_option='USER_ENTERED')
             last_row = len(rows) + 1
-            sheet.format(f'A2:F{last_row}', {
+            sheet.format(f'A2:G{last_row}', {
                 'textFormat': {'foregroundColor': COLOR_BLACK}
             })
         print(f"  {len(rows)} 件を登録しました")
@@ -388,11 +402,13 @@ def monitor_folder():
                 url = extract_url_from_cell(row[COL_FILEURL - 1])
                 fid = extract_file_id_from_url(url)
                 if fid:
+                    folder_url = extract_url_from_cell(row[COL_FOLDERURL - 1]) if len(row) >= COL_FOLDERURL else ''
                     previous_files.append({
                         'fileId':     fid,
                         'fileName':   row[COL_FILENAME - 1]   if len(row) >= COL_FILENAME   else '',
                         'folderPath': row[COL_FOLDERPATH - 1] if len(row) >= COL_FOLDERPATH else '',
                         'fileUrl':    url,
+                        'folderUrl':  folder_url,
                     })
 
         deleted, renamed, added = detect_changes(previous_files, current_files)
