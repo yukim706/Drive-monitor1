@@ -5,7 +5,7 @@
 # 【セキュリティ】GAS_SECRET_TOKEN によるトークン検証付き
 # 【検知内容】削除 / 名前変更 / 新規追加
 # 【シート構成】1シート（ファイルリスト兼変更履歴）
-#   A:更新日時 B:ファイル名 C:変更前ファイル名 D:URL E:ファイルID F:種別 G:フォルダパス
+#   A:更新日時 B:ファイル名 C:変更前ファイル名 D:URL E:ファイルID F:種別 G:フォルダURL
 # ============================================================
 
 import subprocess
@@ -49,10 +49,10 @@ COL_BEFORE     = 3   # C: 変更前ファイル名
 COL_FILEURL    = 4   # D: URL
 COL_FILEID     = 5   # E: ファイルID
 COL_STATUS     = 6   # F: 種別
-COL_FOLDERPATH = 7   # G: フォルダパス
+COL_FOLDERPATH = 7   # G: フォルダURL
 TOTAL_COLS     = 7
 
-HEADERS = ['更新日時', 'ファイル名', '変更前ファイル名', 'URL', 'ファイルID', '種別', 'フォルダパス']
+HEADERS = ['更新日時', 'ファイル名', '変更前ファイル名', 'URL', 'ファイルID', '種別', 'フォルダURL']
 
 # ── 曜日（日本語）
 WEEKDAYS_JP = ['月', '火', '水', '木', '金', '土', '日']
@@ -86,9 +86,11 @@ def build_file_url(file_id, mime_type):
     return urls.get(mime_type, f'https://drive.google.com/file/d/{file_id}/view')
 
 # ── Drive API でフォルダ内ファイルを再帰取得
-def get_all_files(folder_id, folder_path, result=None):
+def get_all_files(folder_id, result=None):
     if result is None:
         result = []
+
+    folder_url = f'https://drive.google.com/drive/folders/{folder_id}'
 
     page_token = None
     while True:
@@ -102,11 +104,11 @@ def get_all_files(folder_id, folder_path, result=None):
             mime = f['mimeType']
             ext  = MIME_EXTENSIONS.get(mime, '')
             result.append({
-                'fileId':     f['id'],
-                'fileName':   f['name'] + ext,
-                'mimeType':   mime,
-                'fileUrl':    build_file_url(f['id'], mime),
-                'folderPath': folder_path,
+                'fileId':    f['id'],
+                'fileName':  f['name'] + ext,
+                'mimeType':  mime,
+                'fileUrl':   build_file_url(f['id'], mime),
+                'folderUrl': folder_url,
             })
         page_token = response.get('nextPageToken')
         if not page_token:
@@ -121,7 +123,7 @@ def get_all_files(folder_id, folder_path, result=None):
             pageToken=sub_page_token
         ).execute()
         for sub in sub_response.get('files', []):
-            get_all_files(sub['id'], folder_path + '/' + sub['name'], result)
+            get_all_files(sub['id'], result)
         sub_page_token = sub_response.get('nextPageToken')
         if not sub_page_token:
             break
@@ -138,6 +140,7 @@ def get_or_create_sheet(spreadsheet, sheet_name):
         return sheet
 
 # ── シートから fileId → 行番号 の辞書を作成（E列＝COL_FILEID=5）
+# ※ ヘッダー行（1行目）はID列が空のため自動スキップされる
 def build_id_to_row_map(sheet):
     all_values = sheet.get_all_values()
     id_to_row = {}
@@ -148,7 +151,7 @@ def build_id_to_row_map(sheet):
             id_to_row[row[COL_FILEID - 1]] = i + 1  # 1始まり行番号
     return id_to_row
 
-# ── 行を上書き更新（A:更新日時 B:ファイル名 C:変更前 D:URL E:ファイルID F:種別 G:フォルダパス）
+# ── 行を上書き更新（A:更新日時 B:ファイル名 C:変更前 D:URL E:ファイルID F:種別 G:フォルダURL）
 def update_row(sheet, row_num, now_str, file_data, status, before_name=''):
     values = [
         now_str,
@@ -157,10 +160,11 @@ def update_row(sheet, row_num, now_str, file_data, status, before_name=''):
         file_data.get('fileUrl', ''),
         file_data.get('fileId', ''),
         status,
-        file_data.get('folderPath', ''),
+        file_data.get('folderUrl', ''),
     ]
     range_str = f'A{row_num}:G{row_num}'
-    sheet.update(range_name=range_str, values=[values])
+    # 【修正1】range_name= キーワード引数は gspread v6+ で廃止 → 位置引数で渡す（v5/v6両対応）
+    sheet.update(range_str, [values])
 
     # 削除の場合は行全体を赤文字にする
     if status == '削除':
@@ -186,7 +190,7 @@ def append_new_row(sheet, now_str, file_data, status):
         file_data.get('fileUrl', ''),
         file_data.get('fileId', ''),
         status,
-        file_data.get('folderPath', ''),
+        file_data.get('folderUrl', ''),
     ]
     sheet.append_row(row, value_input_option='USER_ENTERED')
 
@@ -209,7 +213,7 @@ def detect_changes(previous_files, current_files):
                 'fileName':   cf['fileName'],
                 'beforeName': pf['fileName'],
                 'fileUrl':    cf.get('fileUrl', ''),
-                'folderPath': cf.get('folderPath', ''),
+                'folderUrl': cf.get('folderUrl', ''),
                 'mimeType':   cf.get('mimeType', ''),
             })
 
@@ -230,7 +234,7 @@ def build_email_body(deleted, renamed, added):
             lines += [
                 f"  ファイル名  ：{f.get('fileName', '')}",
                 f"  URL        ：{f.get('fileUrl', '')}",
-                f"  フォルダパス：{f.get('folderPath', '')}",
+                f"  フォルダURL：{f.get('folderUrl', '')}",
                 f"  種別       ：削除", ''
             ]
 
@@ -241,7 +245,7 @@ def build_email_body(deleted, renamed, added):
                 f"  ファイル名      ：{f.get('fileName', '')}",
                 f"  変更前ファイル名：{f.get('beforeName', '')}",
                 f"  URL            ：{f.get('fileUrl', '')}",
-                f"  フォルダパス   ：{f.get('folderPath', '')}",
+                f"  フォルダURL   ：{f.get('folderUrl', '')}",
                 f"  種別           ：ファイル名変更", ''
             ]
 
@@ -251,7 +255,7 @@ def build_email_body(deleted, renamed, added):
             lines += [
                 f"  ファイル名  ：{f.get('fileName', '')}",
                 f"  URL        ：{f.get('fileUrl', '')}",
-                f"  フォルダパス：{f.get('folderPath', '')}",
+                f"  フォルダURL：{f.get('folderUrl', '')}",
                 f"  種別       ：新規", ''
             ]
 
@@ -297,13 +301,11 @@ def monitor_folder():
     sheet = get_or_create_sheet(spreadsheet, FILE_SHEET)
 
     print("\n[1] ファイル一覧取得中...")
-    root_name = drive_service.files().get(
-        fileId=FOLDER_ID, fields='name'
-    ).execute().get('name', 'Root')
-    current_files = get_all_files(FOLDER_ID, root_name)
+    current_files = get_all_files(FOLDER_ID)
     print(f"  現在のファイル数：{len(current_files)} 件")
 
     # ── シートに既存データがあるか確認
+    # ※ id_to_row はE列にFileIDが入っている行のみカウント（ヘッダー行は除外済み）
     id_to_row = build_id_to_row_map(sheet)
     is_first_run = len(id_to_row) == 0
 
@@ -323,7 +325,7 @@ def monitor_folder():
                 f.get('fileUrl', ''),
                 f.get('fileId', ''),
                 '正常',
-                f.get('folderPath', ''),
+                f.get('folderUrl', ''),
             ])
         if rows:
             sheet.append_rows(rows, value_input_option='USER_ENTERED')
@@ -335,7 +337,9 @@ def monitor_folder():
         # ────────────────────────────────────────
         print("\n[2] 前回リストと比較中...")
 
-        # 前回データをシートから再構築（E列のfileIdを使用）
+        # 前回データをシートから再構築
+        # 【修正2・3】fileUrl（D列）も読み込む
+        #   → 削除ファイルのURLがメール通知・シート上書き時に空欄になるバグを修正
         all_values = sheet.get_all_values()
         previous_files = []
         for i, row in enumerate(all_values):
@@ -343,9 +347,10 @@ def monitor_folder():
                 continue
             if len(row) >= COL_FILEID and row[COL_FILEID - 1]:
                 previous_files.append({
-                    'fileId':     row[COL_FILEID - 1],
-                    'fileName':   row[COL_FILENAME - 1]   if len(row) >= COL_FILENAME   else '',
-                    'folderPath': row[COL_FOLDERPATH - 1] if len(row) >= COL_FOLDERPATH else '',
+                    'fileId':     row[COL_FILEID     - 1],
+                    'fileName':   row[COL_FILENAME   - 1] if len(row) >= COL_FILENAME   else '',
+                    'fileUrl':    row[COL_FILEURL    - 1] if len(row) >= COL_FILEURL    else '',
+                    'folderUrl': row[COL_FOLDERPATH - 1] if len(row) >= COL_FOLDERPATH else '',
                 })
 
         deleted, renamed, added = detect_changes(previous_files, current_files)
