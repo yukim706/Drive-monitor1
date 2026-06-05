@@ -32,7 +32,7 @@ gc            = gspread.Client(auth=creds)
 drive_service = build('drive', 'v3', credentials=creds)
 
 # ── 設定値（環境変数 or デフォルト値）────────────────────────
-FOLDER_ID        = os.environ.get('FOLDER_ID',      '1m7VuFYKcticG68MkGG8yT6u2NA8K-TES')
+FOLDER_ID        = os.environ.get('FOLDER_ID',      '1tVQU7ufn_Ob54kspgh88iK03-wUPF7mU')
 SPREADSHEET_ID   = os.environ.get('SPREADSHEET_ID', '146fJr4d1TL1PWx_jGwNpznNzqp5Q_BwBH2_jutdjuhs')
 GAS_MAIL_URL     = os.environ['GAS_MAIL_URL']
 GAS_SECRET_TOKEN = os.environ['GAS_SECRET_TOKEN']
