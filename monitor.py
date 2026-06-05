@@ -41,11 +41,11 @@ gc            = gspread.Client(auth=creds)
 drive_service = build('drive', 'v3', credentials=creds)
 
 # ── 設定値（GitHub Secretsから取得）
-SPREADSHEET_ID    = os.environ['SPREADSHEET_ID']
-GAS_MAIL_URL      = os.environ['GAS_MAIL_URL']
-GAS_SECRET_TOKEN  = os.environ['GAS_SECRET_TOKEN']
-EMAIL_TO          = os.environ['EMAIL_TO']
-FILE_SHEET        = 'ファイル一覧'
+SPREADSHEET_ID   = os.environ['SPREADSHEET_ID']
+GAS_MAIL_URL     = os.environ['GAS_MAIL_URL']
+GAS_SECRET_TOKEN = os.environ['GAS_SECRET_TOKEN']
+EMAIL_TO         = os.environ['EMAIL_TO']
+FILE_SHEET       = 'ファイル一覧'
 FOLDER_INFO_SHEET = 'フォルダ情報'
 
 # 列番号定数（1始まり）
@@ -129,11 +129,11 @@ def extract_folder_id_from_url(url):
         return None
     # https://drive.google.com/drive/folders/{id} 形式
     # https://drive.google.com/drive/u/0/folders/{id} 形式 も同じ正規表現でヒット
-    m = re.search(r'/folders/([a-zA-Z0-9_-]+)', url)
+    m = re.search(r'/folders/([a-zA-Z0-9_-]+?)(?:[/?&#]|$)', url)
     if m:
         return m.group(1)
     # ?id= 形式
-    m = re.search(r'[?&]id=([a-zA-Z0-9_-]+)', url)
+    m = re.search(r'[?&]id=([a-zA-Z0-9_-]+?)(?:[&# ]|$)', url)
     if m:
         return m.group(1)
     return None
