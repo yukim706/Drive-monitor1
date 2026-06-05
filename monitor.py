@@ -5,7 +5,8 @@
 # 【セキュリティ】GAS_SECRET_TOKEN によるトークン検証付き
 # 【検知内容】削除 / 名前変更 / 新規追加
 # 【シート構成】1シート（ファイルリスト兼変更履歴）
-#   A:更新日時 B:ファイル名 C:変更前ファイル名 D:URL E:ファイルID F:種別 G:フォルダパス
+#   A:更新日時 B:ファイル名 C:変更前ファイル名 D:URL E:種別 F:フォルダパス
+# 【文字色】新規=黒 / 削除=赤 / 名前変更=青
 # ============================================================
 
 import subprocess
@@ -47,12 +48,23 @@ COL_UPDATED    = 1   # A: 更新日時
 COL_FILENAME   = 2   # B: ファイル名
 COL_BEFORE     = 3   # C: 変更前ファイル名
 COL_FILEURL    = 4   # D: URL
-COL_FILEID     = 5   # E: ファイルID
-COL_STATUS     = 6   # F: 種別
-COL_FOLDERPATH = 7   # G: フォルダパス
-TOTAL_COLS     = 7
+COL_STATUS     = 5   # E: 種別
+COL_FOLDERPATH = 6   # F: フォルダパス
+TOTAL_COLS     = 6
 
-HEADERS = ['更新日時', 'ファイル名', '変更前ファイル名', 'URL', 'ファイルID', '種別', 'フォルダパス']
+HEADERS = ['更新日時', 'ファイル名', '変更前ファイル名', 'URL', '種別', 'フォルダパス']
+
+# ── 文字色定義
+COLOR_BLACK = {'red': 0.0, 'green': 0.0, 'blue': 0.0}  # 新規・正常
+COLOR_RED   = {'red': 1.0, 'green': 0.0, 'blue': 0.0}  # 削除
+COLOR_BLUE  = {'red': 0.0, 'green': 0.0, 'blue': 1.0}  # 名前変更
+
+STATUS_COLOR = {
+    '正常':          COLOR_BLACK,
+    '新規':          COLOR_BLACK,
+    '削除':          COLOR_RED,
+    'ファイル名変更': COLOR_BLUE,
+}
 
 # ── 曜日（日本語）
 WEEKDAYS_JP = ['月', '火', '水', '木', '金', '土', '日']
@@ -84,6 +96,17 @@ def build_file_url(file_id, mime_type):
         'application/vnd.google-apps.drawing':      f'https://docs.google.com/drawings/d/{file_id}/edit',
     }
     return urls.get(mime_type, f'https://drive.google.com/file/d/{file_id}/view')
+
+# ── URLからfileIdを逆引き
+def extract_file_id_from_url(url):
+    """URL例: https://drive.google.com/file/d/{fileId}/view
+              https://docs.google.com/document/d/{fileId}/edit"""
+    parts = url.rstrip('/').split('/')
+    if 'd' in parts:
+        idx = parts.index('d')
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+    return None
 
 # ── Drive API でフォルダ内ファイルを再帰取得
 def get_all_files(folder_id, folder_path, result=None):
@@ -137,58 +160,55 @@ def get_or_create_sheet(spreadsheet, sheet_name):
         sheet.append_row(HEADERS)
         return sheet
 
-# ── シートから fileId → 行番号 の辞書を作成（E列＝COL_FILEID=5）
+# ── シートから fileId → 行番号 の辞書を作成（D列URLからfileIdを逆引き）
 def build_id_to_row_map(sheet):
     all_values = sheet.get_all_values()
     id_to_row = {}
     for i, row in enumerate(all_values):
         if i == 0:
             continue  # ヘッダースキップ
-        if len(row) >= COL_FILEID and row[COL_FILEID - 1]:
-            id_to_row[row[COL_FILEID - 1]] = i + 1  # 1始まり行番号
+        if len(row) >= COL_FILEURL and row[COL_FILEURL - 1]:
+            fid = extract_file_id_from_url(row[COL_FILEURL - 1])
+            if fid:
+                id_to_row[fid] = i + 1  # 1始まり行番号
     return id_to_row
 
-# ── 行を上書き更新（A:更新日時 B:ファイル名 C:変更前 D:URL E:ファイルID F:種別 G:フォルダパス）
+# ── 行に文字色を適用
+def apply_row_color(sheet, row_num, status):
+    color = STATUS_COLOR.get(status, COLOR_BLACK)
+    range_str = f'A{row_num}:F{row_num}'
+    sheet.format(range_str, {
+        'textFormat': {'foregroundColor': color}
+    })
+
+# ── 行を上書き更新（A:更新日時 B:ファイル名 C:変更前 D:URL E:種別 F:フォルダパス）
 def update_row(sheet, row_num, now_str, file_data, status, before_name=''):
     values = [
         now_str,
         file_data.get('fileName', ''),
         before_name,
         file_data.get('fileUrl', ''),
-        file_data.get('fileId', ''),
         status,
         file_data.get('folderPath', ''),
     ]
-    range_str = f'A{row_num}:G{row_num}'
+    range_str = f'A{row_num}:F{row_num}'
     sheet.update(range_name=range_str, values=[values])
+    apply_row_color(sheet, row_num, status)
 
-    # 削除の場合は行全体を赤文字にする
-    if status == '削除':
-        sheet.format(range_str, {
-            'textFormat': {
-                'foregroundColor': {'red': 1.0, 'green': 0.0, 'blue': 0.0}
-            }
-        })
-    else:
-        # 削除以外は黒文字に戻す
-        sheet.format(range_str, {
-            'textFormat': {
-                'foregroundColor': {'red': 0.0, 'green': 0.0, 'blue': 0.0}
-            }
-        })
-
-# ── 新規行を追加
+# ── 新規行を追加して文字色を適用
 def append_new_row(sheet, now_str, file_data, status):
     row = [
         now_str,
         file_data.get('fileName', ''),
         '',
         file_data.get('fileUrl', ''),
-        file_data.get('fileId', ''),
         status,
         file_data.get('folderPath', ''),
     ]
     sheet.append_row(row, value_input_option='USER_ENTERED')
+    # 追加した行番号を取得して色を適用
+    row_num = len(sheet.get_all_values())
+    apply_row_color(sheet, row_num, status)
 
 # ── 変更の判定
 def detect_changes(previous_files, current_files):
@@ -303,7 +323,7 @@ def monitor_folder():
     current_files = get_all_files(FOLDER_ID, root_name)
     print(f"  現在のファイル数：{len(current_files)} 件")
 
-    # ── シートに既存データがあるか確認
+    # ── シートに既存データがあるか確認（D列URLからfileIdを逆引き）
     id_to_row = build_id_to_row_map(sheet)
     is_first_run = len(id_to_row) == 0
 
@@ -311,7 +331,7 @@ def monitor_folder():
 
     if is_first_run:
         # ────────────────────────────────────────
-        # 初回実行：全ファイルを一括登録
+        # 初回実行：全ファイルを一括登録（黒文字）
         # ────────────────────────────────────────
         print("\n[2] 初回実行 → 全ファイルを登録中...")
         rows = []
@@ -321,12 +341,16 @@ def monitor_folder():
                 f.get('fileName', ''),
                 '',
                 f.get('fileUrl', ''),
-                f.get('fileId', ''),
                 '正常',
                 f.get('folderPath', ''),
             ])
         if rows:
             sheet.append_rows(rows, value_input_option='USER_ENTERED')
+            # 初回登録行すべてに黒文字を適用（2行目〜）
+            last_row = len(rows) + 1  # ヘッダー行を含めた最終行
+            sheet.format(f'A2:F{last_row}', {
+                'textFormat': {'foregroundColor': COLOR_BLACK}
+            })
         print(f"  {len(rows)} 件を登録しました")
 
     else:
@@ -335,22 +359,25 @@ def monitor_folder():
         # ────────────────────────────────────────
         print("\n[2] 前回リストと比較中...")
 
-        # 前回データをシートから再構築（E列のfileIdを使用）
+        # 前回データをシートのD列URL→fileId逆引きで再構築
         all_values = sheet.get_all_values()
         previous_files = []
         for i, row in enumerate(all_values):
             if i == 0:
                 continue
-            if len(row) >= COL_FILEID and row[COL_FILEID - 1]:
-                previous_files.append({
-                    'fileId':     row[COL_FILEID - 1],
-                    'fileName':   row[COL_FILENAME - 1]   if len(row) >= COL_FILENAME   else '',
-                    'folderPath': row[COL_FOLDERPATH - 1] if len(row) >= COL_FOLDERPATH else '',
-                })
+            if len(row) >= COL_FILEURL and row[COL_FILEURL - 1]:
+                fid = extract_file_id_from_url(row[COL_FILEURL - 1])
+                if fid:
+                    previous_files.append({
+                        'fileId':     fid,
+                        'fileName':   row[COL_FILENAME - 1]   if len(row) >= COL_FILENAME   else '',
+                        'folderPath': row[COL_FOLDERPATH - 1] if len(row) >= COL_FOLDERPATH else '',
+                        'fileUrl':    row[COL_FILEURL - 1],
+                    })
 
         deleted, renamed, added = detect_changes(previous_files, current_files)
 
-        # 削除
+        # 削除（赤文字）
         if deleted:
             print(f"  ❌ 削除：{len(deleted)} 件")
             for f in deleted:
@@ -359,21 +386,21 @@ def monitor_folder():
                     update_row(sheet, row_num, now_str, f, '削除')
                     print(f"    - {f.get('fileName','')} → 行{row_num}を赤文字で上書き")
 
-        # 名前変更
+        # 名前変更（青文字）
         if renamed:
             print(f"  ■ 名前変更：{len(renamed)} 件")
             for f in renamed:
                 row_num = id_to_row.get(f['fileId'])
                 if row_num:
                     update_row(sheet, row_num, now_str, f, 'ファイル名変更', before_name=f['beforeName'])
-                    print(f"    - {f.get('beforeName','')} → {f.get('fileName','')}（行{row_num}を上書き）")
+                    print(f"    - {f.get('beforeName','')} → {f.get('fileName','')}（行{row_num}を青文字で上書き）")
 
-        # 新規追加
+        # 新規追加（黒文字）
         if added:
             print(f"  ◉ 新規追加：{len(added)} 件")
             for f in added:
                 append_new_row(sheet, now_str, f, '新規')
-                print(f"    - {f.get('fileName','')} → 新規行追加")
+                print(f"    - {f.get('fileName','')} → 新規行追加（黒文字）")
 
         if not (deleted or renamed or added):
             print("  変更なし（削除・名前変更・追加は検出されませんでした）")
