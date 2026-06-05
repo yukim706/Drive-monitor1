@@ -198,8 +198,11 @@ def get_all_files(folder_id, folder_path, result=None):
             q=f"'{folder_id}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false",
             fields='nextPageToken, files(id, name, mimeType)',
             pageSize=1000,
-            pageToken=page_token
+            pageToken=page_token,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
         ).execute()
+        print(f"  🔍 フォルダ {folder_id} のファイル数（このページ）：{len(response.get('files', []))} 件")
         for f in response.get('files', []):
             mime = f['mimeType']
             ext  = MIME_EXTENSIONS.get(mime, '')
@@ -221,7 +224,9 @@ def get_all_files(folder_id, folder_path, result=None):
             q=f"'{folder_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
             fields='nextPageToken, files(id, name)',
             pageSize=1000,
-            pageToken=sub_page_token
+            pageToken=sub_page_token,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
         ).execute()
         for sub in sub_response.get('files', []):
             get_all_files(sub['id'], folder_path + '/' + sub['name'], result)
