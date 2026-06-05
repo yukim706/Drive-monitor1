@@ -26,7 +26,7 @@ on:
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 10   # 万が一ハングしても10分で強制終了
+    timeout-minutes: 10
 
     steps:
       - name: リポジトリをチェックアウト
@@ -46,14 +46,8 @@ jobs:
 
       - name: Driveファイル監視スクリプトを実行
         env:
-          # ── GitHub Secrets から注入する環境変数 ──────────────
-          # GOOGLE_SA_JSON : サービスアカウントJSONファイルの中身（全文）
-          # GAS_MAIL_URL   : GAS WebアプリのデプロイURL
-          # EMAIL_TO       : 通知先メールアドレス（任意・省略時はスクリプト内デフォルト値）
-          # FOLDER_ID      : 監視フォルダID（任意・省略時はスクリプト内デフォルト値）
-          # SPREADSHEET_ID : スプレッドシートID（任意・省略時はスクリプト内デフォルト値）
           GOOGLE_SA_JSON: ${{ secrets.GOOGLE_SA_JSON }}
-          GAS_MAIL_URL:   ${{ secrets.GAS_MAIL_URL }}
-          GAS_SECRET_TOKEN: ${{ secrets.GAS_SECRET_TOKEN }}   # ← これを追加
-          EMAIL_TO:       ${{ secrets.EMAIL_TO }}
+          GAS_MAIL_URL: ${{ secrets.GAS_MAIL_URL }}
+          GAS_SECRET_TOKEN: ${{ secrets.GAS_SECRET_TOKEN }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
         run: python monitor.py
