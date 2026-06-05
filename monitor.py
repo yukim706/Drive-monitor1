@@ -38,12 +38,12 @@ creds = Credentials.from_service_account_info(sa_info, scopes=SCOPES)
 gc            = gspread.Client(auth=creds)
 drive_service = build('drive', 'v3', credentials=creds)
 
-# ── 設定値
-FOLDER_ID        = os.environ.get('FOLDER_ID',      '1tVQU7ufn_Ob54kspgh88iK03-wUPF7mU')
-SPREADSHEET_ID   = os.environ.get('SPREADSHEET_ID', '146fJr4d1TL1PWx_jGwNpznNzqp5Q_BwBH2_jutdjuhs')
+# ── 設定値（全てGitHub Secretsから取得）
+FOLDER_ID        = os.environ['FOLDER_ID']
+SPREADSHEET_ID   = os.environ['SPREADSHEET_ID']
 GAS_MAIL_URL     = os.environ['GAS_MAIL_URL']
 GAS_SECRET_TOKEN = os.environ['GAS_SECRET_TOKEN']
-EMAIL_TO         = os.environ.get('EMAIL_TO', 'yukimgidai2020@gmail.com')
+EMAIL_TO         = os.environ['EMAIL_TO']
 FILE_SHEET       = 'ファイル一覧'
 
 # 列番号定数（1始まり）
@@ -100,7 +100,7 @@ def build_file_url(file_id, mime_type):
     }
     return urls.get(mime_type, f'https://drive.google.com/file/d/{file_id}/view')
 
-# ── URLをHYPERLINK数式に変換（スプレッドシートでタップして開けるリンク）
+# ── URLをHYPERLINK数式に変換（タップで開く）
 def make_hyperlink(url, label=None):
     if not url:
         return ''
@@ -109,7 +109,7 @@ def make_hyperlink(url, label=None):
     display_escaped = display.replace('"', '""')
     return f'=HYPERLINK("{url_escaped}","{display_escaped}")'
 
-# ── URLからfileIdを逆引き（HYPERLINK数式にも対応）
+# ── セルからURLを取り出す（HYPERLINK数式にも対応）
 def extract_url_from_cell(cell_value):
     if not cell_value:
         return ''
@@ -118,6 +118,7 @@ def extract_url_from_cell(cell_value):
         return m.group(1) if m else ''
     return cell_value
 
+# ── URLからfileIdを逆引き
 def extract_file_id_from_url(url):
     parts = url.rstrip('/').split('/')
     if 'd' in parts:
@@ -178,11 +179,10 @@ def get_or_create_sheet(spreadsheet, sheet_name):
         sheet.append_row(HEADERS)
         return sheet
 
-# ── 行数が足りなくなったら自動で拡張する
-EXPAND_ROWS = 1000  # 一度に追加する行数
+# ── 行数が足りなくなったら自動で拡張
+EXPAND_ROWS = 1000
 
 def ensure_rows(sheet, rows_needed):
-    """現在の行数 + rows_needed を確保できなければ自動拡張する"""
     current_rows = sheet.rowcount
     used_rows    = len(sheet.get_all_values())
     if used_rows + rows_needed > current_rows:
@@ -190,7 +190,7 @@ def ensure_rows(sheet, rows_needed):
         sheet.add_rows(new_total - current_rows)
         print(f"  📋 シートを拡張しました：{current_rows} → {new_total} 行")
 
-# ── シートから fileId → 行番号 の辞書を作成（D列URLからfileIdを逆引き）
+# ── シートから fileId → 行番号 の辞書を作成
 def build_id_to_row_map(sheet):
     all_values = sheet.get_all_values()
     id_to_row = {}
@@ -356,7 +356,6 @@ def monitor_folder():
 
     id_to_row = build_id_to_row_map(sheet)
     is_first_run = len(id_to_row) == 0
-
     now_str = format_datetime_jp(datetime.now(JST))
 
     if is_first_run:
@@ -382,7 +381,6 @@ def monitor_folder():
 
     else:
         print("\n[2] 前回リストと比較中...")
-
         all_values = sheet.get_all_values()
         previous_files = []
         for i, row in enumerate(all_values):
