@@ -5,12 +5,7 @@
 # 【セキュリティ】GAS_SECRET_TOKEN によるトークン検証付き
 # 【検知内容】削除 / 名前変更 / 新規追加
 # 【シート構成】1シート（ファイルリスト兼変更履歴）
-#   A:更新日時 B:ファイル名 C:変更前ファイル名 D:URL E:種別 F:フォルダパス G:フォルダURL
-# 【文字色】新規=黒 / 削除=赤 / 名前変更=青
-# 【D列URL】ハイパーリンク付き・URL表示（タップで開く）
-# 【G列】フォルダURL（ハイパーリンク付き）
-# 【行数】不足時に自動拡張
-# 【FOLDER_ID】スプレッドシート「フォルダ情報」シートのB2セル（URL形式）から取得
+#   A:更新日時 B:ファイル名 C:変更前ファイル名 D:URL E:ファイルID F:種別 G:フォルダパス
 # ============================================================
 
 import subprocess
@@ -23,7 +18,6 @@ from googleapiclient.discovery import build
 from datetime import datetime, timezone, timedelta
 import json
 import os
-import re
 import urllib.request
 
 # ── タイムゾーン（JST）
@@ -40,37 +34,25 @@ creds = Credentials.from_service_account_info(sa_info, scopes=SCOPES)
 gc            = gspread.Client(auth=creds)
 drive_service = build('drive', 'v3', credentials=creds)
 
-# ── 設定値（GitHub Secretsから取得）
-SPREADSHEET_ID   = os.environ['SPREADSHEET_ID']
+# ── 設定値
+FOLDER_ID        = os.environ.get('FOLDER_ID',      '1tVQU7ufn_Ob54kspgh88iK03-wUPF7mU')
+SPREADSHEET_ID   = os.environ.get('SPREADSHEET_ID', '146fJr4d1TL1PWx_jGwNpznNzqp5Q_BwBH2_jutdjuhs')
 GAS_MAIL_URL     = os.environ['GAS_MAIL_URL']
 GAS_SECRET_TOKEN = os.environ['GAS_SECRET_TOKEN']
-EMAIL_TO         = os.environ['EMAIL_TO']
+EMAIL_TO         = os.environ.get('EMAIL_TO', 'yukimgidai2020@gmail.com')
 FILE_SHEET       = 'ファイル一覧'
-FOLDER_INFO_SHEET = 'フォルダ情報'
 
 # 列番号定数（1始まり）
-COL_UPDATED     = 1   # A: 更新日時
-COL_FILENAME    = 2   # B: ファイル名
-COL_BEFORE      = 3   # C: 変更前ファイル名
-COL_FILEURL     = 4   # D: URL
-COL_STATUS      = 5   # E: 種別
-COL_FOLDERPATH  = 6   # F: フォルダパス
-COL_FOLDERURL   = 7   # G: フォルダURL
-TOTAL_COLS      = 7
+COL_UPDATED    = 1   # A: 更新日時
+COL_FILENAME   = 2   # B: ファイル名
+COL_BEFORE     = 3   # C: 変更前ファイル名
+COL_FILEURL    = 4   # D: URL
+COL_FILEID     = 5   # E: ファイルID
+COL_STATUS     = 6   # F: 種別
+COL_FOLDERPATH = 7   # G: フォルダパス
+TOTAL_COLS     = 7
 
-HEADERS = ['更新日時', 'ファイル名', '変更前ファイル名', 'URL', '種別', 'フォルダパス', 'フォルダURL']
-
-# ── 文字色定義
-COLOR_BLACK = {'red': 0.0, 'green': 0.0, 'blue': 0.0}
-COLOR_RED   = {'red': 1.0, 'green': 0.0, 'blue': 0.0}
-COLOR_BLUE  = {'red': 0.0, 'green': 0.0, 'blue': 1.0}
-
-STATUS_COLOR = {
-    '正常':          COLOR_BLACK,
-    '新規':          COLOR_BLACK,
-    '削除':          COLOR_RED,
-    'ファイル名変更': COLOR_BLUE,
-}
+HEADERS = ['更新日時', 'ファイル名', '変更前ファイル名', 'URL', 'ファイルID', '種別', 'フォルダパス']
 
 # ── 曜日（日本語）
 WEEKDAYS_JP = ['月', '火', '水', '木', '金', '土', '日']
@@ -93,7 +75,7 @@ MIME_EXTENSIONS = {
     'image/png':  '.png',
 }
 
-# ── MIMEタイプ → ファイルURL生成
+# ── MIMEタイプ → URL生成
 def build_file_url(file_id, mime_type):
     urls = {
         'application/vnd.google-apps.document':     f'https://docs.google.com/document/d/{file_id}/edit',
@@ -102,90 +84,6 @@ def build_file_url(file_id, mime_type):
         'application/vnd.google-apps.drawing':      f'https://docs.google.com/drawings/d/{file_id}/edit',
     }
     return urls.get(mime_type, f'https://drive.google.com/file/d/{file_id}/view')
-
-# ── フォルダID → フォルダURL生成
-def build_folder_url(folder_id):
-    return f'https://drive.google.com/drive/folders/{folder_id}'
-
-# ── URLをHYPERLINK数式に変換（URLをそのまま表示・タップで開く）
-def make_hyperlink(url):
-    if not url:
-        return ''
-    url_escaped = url.replace('"', '""')
-    return f'=HYPERLINK("{url_escaped}","{url_escaped}")'
-
-# ── セルからURLを取り出す（HYPERLINK数式にも対応）
-def extract_url_from_cell(cell_value):
-    if not cell_value:
-        return ''
-    if cell_value.startswith('=HYPERLINK('):
-        m = re.search(r'=HYPERLINK\("([^"]+)"', cell_value)
-        return m.group(1) if m else ''
-    return cell_value
-
-# ── URLからフォルダIDを抽出（folders/ 形式と ?id= 形式に両対応）
-def extract_folder_id_from_url(url):
-    if not url:
-        return None
-    # https://drive.google.com/drive/folders/{id} 形式
-    # https://drive.google.com/drive/u/0/folders/{id} 形式 も同じ正規表現でヒット
-    m = re.search(r'/folders/([a-zA-Z0-9_-]+?)(?:[/?&#]|$)', url)
-    if m:
-        return m.group(1)
-    # ?id= 形式
-    m = re.search(r'[?&]id=([a-zA-Z0-9_-]+?)(?:[&# ]|$)', url)
-    if m:
-        return m.group(1)
-    return None
-
-# ── URLからfileIdを逆引き（ファイル用）
-def extract_file_id_from_url(url):
-    parts = url.rstrip('/').split('/')
-    if 'd' in parts:
-        idx = parts.index('d')
-        if idx + 1 < len(parts):
-            return parts[idx + 1]
-    return None
-
-# ── 「フォルダ情報」シートのA2（フォルダ名）・B2（フォルダURL）を取得
-def get_folder_info_from_sheet(spreadsheet):
-    try:
-        info_sheet = spreadsheet.worksheet(FOLDER_INFO_SHEET)
-    except gspread.exceptions.WorksheetNotFound:
-        raise RuntimeError(
-            f"❌ シート「{FOLDER_INFO_SHEET}」が見つかりません。"
-            "スプレッドシートにシートを作成してください。"
-        )
-
-    b2_value = info_sheet.acell('B2').value
-
-    if not b2_value or not b2_value.strip():
-        raise RuntimeError(
-            f"❌ 「{FOLDER_INFO_SHEET}」シートのB2セルが空です。"
-            "監視対象フォルダのURLを入力してください。"
-        )
-
-    raw_url = extract_url_from_cell(b2_value.strip())
-    folder_id = extract_folder_id_from_url(raw_url)
-    if not folder_id:
-        raise RuntimeError(
-            f"❌ B2セルのURLからフォルダIDを取得できませんでした。\n"
-            f"  入力値：{b2_value}\n"
-            "  例）https://drive.google.com/drive/folders/XXXXXXXXXXXXXXXX"
-        )
-
-    # Drive API でフォルダ名を自動取得（失敗時は 'Root' にフォールバック）
-    try:
-        folder_meta = drive_service.files().get(
-            fileId=folder_id, fields='name', supportsAllDrives=True
-        ).execute()
-        folder_name = folder_meta.get('name', 'Root')
-        print(f"  📂 フォルダ名：{folder_name}（Drive APIより自動取得）")
-    except Exception:
-        folder_name = 'Root'
-        print(f"  📂 フォルダ名：{folder_name}（自動取得失敗のためデフォルト値を使用）")
-    print(f"  📂 フォルダID：{folder_id}（B2セルより取得）")
-    return folder_id, folder_name
 
 # ── Drive API でフォルダ内ファイルを再帰取得
 def get_all_files(folder_id, folder_path, result=None):
@@ -198,11 +96,8 @@ def get_all_files(folder_id, folder_path, result=None):
             q=f"'{folder_id}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false",
             fields='nextPageToken, files(id, name, mimeType)',
             pageSize=1000,
-            pageToken=page_token,
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True,
+            pageToken=page_token
         ).execute()
-        print(f"  🔍 フォルダ {folder_id} のファイル数（このページ）：{len(response.get('files', []))} 件")
         for f in response.get('files', []):
             mime = f['mimeType']
             ext  = MIME_EXTENSIONS.get(mime, '')
@@ -212,7 +107,6 @@ def get_all_files(folder_id, folder_path, result=None):
                 'mimeType':   mime,
                 'fileUrl':    build_file_url(f['id'], mime),
                 'folderPath': folder_path,
-                'folderUrl':  build_folder_url(folder_id),
             })
         page_token = response.get('nextPageToken')
         if not page_token:
@@ -224,9 +118,7 @@ def get_all_files(folder_id, folder_path, result=None):
             q=f"'{folder_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
             fields='nextPageToken, files(id, name)',
             pageSize=1000,
-            pageToken=sub_page_token,
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True,
+            pageToken=sub_page_token
         ).execute()
         for sub in sub_response.get('files', []):
             get_all_files(sub['id'], folder_path + '/' + sub['name'], result)
@@ -241,73 +133,62 @@ def get_or_create_sheet(spreadsheet, sheet_name):
     try:
         return spreadsheet.worksheet(sheet_name)
     except gspread.exceptions.WorksheetNotFound:
-        sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=TOTAL_COLS)
+        sheet = spreadsheet.add_worksheet(title=sheet_name, rows=5000, cols=TOTAL_COLS)
         sheet.append_row(HEADERS)
         return sheet
 
-# ── 行数が足りなくなったら自動で拡張
-EXPAND_ROWS = 1000
-
-def ensure_rows(sheet, rows_needed):
-    current_rows = sheet.row_count
-    used_rows    = len(sheet.get_all_values())
-    if used_rows + rows_needed > current_rows:
-        new_total = current_rows + max(EXPAND_ROWS, rows_needed)
-        sheet.add_rows(new_total - current_rows)
-        print(f"  📋 シートを拡張しました：{current_rows} → {new_total} 行")
-
-# ── シートから fileId → 行番号 の辞書を作成
+# ── シートから fileId → 行番号 の辞書を作成（E列＝COL_FILEID=5）
 def build_id_to_row_map(sheet):
     all_values = sheet.get_all_values()
     id_to_row = {}
     for i, row in enumerate(all_values):
         if i == 0:
-            continue
-        if len(row) >= COL_FILEURL and row[COL_FILEURL - 1]:
-            url = extract_url_from_cell(row[COL_FILEURL - 1])
-            fid = extract_file_id_from_url(url)
-            if fid:
-                id_to_row[fid] = i + 1
+            continue  # ヘッダースキップ
+        if len(row) >= COL_FILEID and row[COL_FILEID - 1]:
+            id_to_row[row[COL_FILEID - 1]] = i + 1  # 1始まり行番号
     return id_to_row
 
-# ── 行に文字色を適用
-def apply_row_color(sheet, row_num, status):
-    color = STATUS_COLOR.get(status, COLOR_BLACK)
-    range_str = f'A{row_num}:G{row_num}'
-    sheet.format(range_str, {
-        'textFormat': {'foregroundColor': color}
-    })
-
-# ── 行を上書き更新
+# ── 行を上書き更新（A:更新日時 B:ファイル名 C:変更前 D:URL E:ファイルID F:種別 G:フォルダパス）
 def update_row(sheet, row_num, now_str, file_data, status, before_name=''):
     values = [
         now_str,
         file_data.get('fileName', ''),
         before_name,
-        make_hyperlink(file_data.get('fileUrl', '')),
+        file_data.get('fileUrl', ''),
+        file_data.get('fileId', ''),
         status,
         file_data.get('folderPath', ''),
-        make_hyperlink(file_data.get('folderUrl', '')),
     ]
     range_str = f'A{row_num}:G{row_num}'
-    sheet.update(range_name=range_str, values=[values], value_input_option='USER_ENTERED')
-    apply_row_color(sheet, row_num, status)
+    sheet.update(range_name=range_str, values=[values])
 
-# ── 新規行を追加して文字色を適用
+    # 削除の場合は行全体を赤文字にする
+    if status == '削除':
+        sheet.format(range_str, {
+            'textFormat': {
+                'foregroundColor': {'red': 1.0, 'green': 0.0, 'blue': 0.0}
+            }
+        })
+    else:
+        # 削除以外は黒文字に戻す
+        sheet.format(range_str, {
+            'textFormat': {
+                'foregroundColor': {'red': 0.0, 'green': 0.0, 'blue': 0.0}
+            }
+        })
+
+# ── 新規行を追加
 def append_new_row(sheet, now_str, file_data, status):
     row = [
         now_str,
         file_data.get('fileName', ''),
         '',
-        make_hyperlink(file_data.get('fileUrl', '')),
+        file_data.get('fileUrl', ''),
+        file_data.get('fileId', ''),
         status,
         file_data.get('folderPath', ''),
-        make_hyperlink(file_data.get('folderUrl', '')),
     ]
-    ensure_rows(sheet, 1)
     sheet.append_row(row, value_input_option='USER_ENTERED')
-    row_num = len(sheet.get_all_values())
-    apply_row_color(sheet, row_num, status)
 
 # ── 変更の判定
 def detect_changes(previous_files, current_files):
@@ -329,7 +210,6 @@ def detect_changes(previous_files, current_files):
                 'beforeName': pf['fileName'],
                 'fileUrl':    cf.get('fileUrl', ''),
                 'folderPath': cf.get('folderPath', ''),
-                'folderUrl':  cf.get('folderUrl', ''),
                 'mimeType':   cf.get('mimeType', ''),
             })
 
@@ -351,8 +231,7 @@ def build_email_body(deleted, renamed, added):
                 f"  ファイル名  ：{f.get('fileName', '')}",
                 f"  URL        ：{f.get('fileUrl', '')}",
                 f"  フォルダパス：{f.get('folderPath', '')}",
-                f"  フォルダURL ：{f.get('folderUrl', '')}",
-                "  種別       ：削除", ''
+                f"  種別       ：削除", ''
             ]
 
     if renamed:
@@ -363,8 +242,7 @@ def build_email_body(deleted, renamed, added):
                 f"  変更前ファイル名：{f.get('beforeName', '')}",
                 f"  URL            ：{f.get('fileUrl', '')}",
                 f"  フォルダパス   ：{f.get('folderPath', '')}",
-                f"  フォルダURL    ：{f.get('folderUrl', '')}",
-                "  種別           ：ファイル名変更", ''
+                f"  種別           ：ファイル名変更", ''
             ]
 
     if added:
@@ -374,8 +252,7 @@ def build_email_body(deleted, renamed, added):
                 f"  ファイル名  ：{f.get('fileName', '')}",
                 f"  URL        ：{f.get('fileUrl', '')}",
                 f"  フォルダパス：{f.get('folderPath', '')}",
-                f"  フォルダURL ：{f.get('folderUrl', '')}",
-                "  種別       ：新規", ''
+                f"  種別       ：新規", ''
             ]
 
     return '\n'.join(lines)
@@ -419,18 +296,23 @@ def monitor_folder():
     spreadsheet = gc.open_by_key(SPREADSHEET_ID)
     sheet = get_or_create_sheet(spreadsheet, FILE_SHEET)
 
-    print("\n[0] 監視フォルダ情報取得中...")
-    folder_id, root_name = get_folder_info_from_sheet(spreadsheet)
-
     print("\n[1] ファイル一覧取得中...")
-    current_files = get_all_files(folder_id, root_name)
+    root_name = drive_service.files().get(
+        fileId=FOLDER_ID, fields='name'
+    ).execute().get('name', 'Root')
+    current_files = get_all_files(FOLDER_ID, root_name)
     print(f"  現在のファイル数：{len(current_files)} 件")
 
+    # ── シートに既存データがあるか確認
     id_to_row = build_id_to_row_map(sheet)
     is_first_run = len(id_to_row) == 0
+
     now_str = format_datetime_jp(datetime.now(JST))
 
     if is_first_run:
+        # ────────────────────────────────────────
+        # 初回実行：全ファイルを一括登録
+        # ────────────────────────────────────────
         print("\n[2] 初回実行 → 全ファイルを登録中...")
         rows = []
         for f in current_files:
@@ -438,42 +320,37 @@ def monitor_folder():
                 now_str,
                 f.get('fileName', ''),
                 '',
-                make_hyperlink(f.get('fileUrl', '')),
+                f.get('fileUrl', ''),
+                f.get('fileId', ''),
                 '正常',
                 f.get('folderPath', ''),
-                make_hyperlink(f.get('folderUrl', '')),
             ])
         if rows:
-            ensure_rows(sheet, len(rows))
             sheet.append_rows(rows, value_input_option='USER_ENTERED')
-            last_row = len(rows) + 1
-            sheet.format(f'A2:G{last_row}', {
-                'textFormat': {'foregroundColor': COLOR_BLACK}
-            })
         print(f"  {len(rows)} 件を登録しました")
 
     else:
+        # ────────────────────────────────────────
+        # 2回目以降：変更検知 → 該当行を上書き
+        # ────────────────────────────────────────
         print("\n[2] 前回リストと比較中...")
+
+        # 前回データをシートから再構築（E列のfileIdを使用）
         all_values = sheet.get_all_values()
         previous_files = []
         for i, row in enumerate(all_values):
             if i == 0:
                 continue
-            if len(row) >= COL_FILEURL and row[COL_FILEURL - 1]:
-                url = extract_url_from_cell(row[COL_FILEURL - 1])
-                fid = extract_file_id_from_url(url)
-                if fid:
-                    folder_url = extract_url_from_cell(row[COL_FOLDERURL - 1]) if len(row) >= COL_FOLDERURL else ''
-                    previous_files.append({
-                        'fileId':     fid,
-                        'fileName':   row[COL_FILENAME - 1]   if len(row) >= COL_FILENAME   else '',
-                        'folderPath': row[COL_FOLDERPATH - 1] if len(row) >= COL_FOLDERPATH else '',
-                        'fileUrl':    url,
-                        'folderUrl':  folder_url,
-                    })
+            if len(row) >= COL_FILEID and row[COL_FILEID - 1]:
+                previous_files.append({
+                    'fileId':     row[COL_FILEID - 1],
+                    'fileName':   row[COL_FILENAME - 1]   if len(row) >= COL_FILENAME   else '',
+                    'folderPath': row[COL_FOLDERPATH - 1] if len(row) >= COL_FOLDERPATH else '',
+                })
 
         deleted, renamed, added = detect_changes(previous_files, current_files)
 
+        # 削除
         if deleted:
             print(f"  ❌ 削除：{len(deleted)} 件")
             for f in deleted:
@@ -482,19 +359,21 @@ def monitor_folder():
                     update_row(sheet, row_num, now_str, f, '削除')
                     print(f"    - {f.get('fileName','')} → 行{row_num}を赤文字で上書き")
 
+        # 名前変更
         if renamed:
             print(f"  ■ 名前変更：{len(renamed)} 件")
             for f in renamed:
                 row_num = id_to_row.get(f['fileId'])
                 if row_num:
                     update_row(sheet, row_num, now_str, f, 'ファイル名変更', before_name=f['beforeName'])
-                    print(f"    - {f.get('beforeName','')} → {f.get('fileName','')}（行{row_num}を青文字で上書き）")
+                    print(f"    - {f.get('beforeName','')} → {f.get('fileName','')}（行{row_num}を上書き）")
 
+        # 新規追加
         if added:
             print(f"  ◉ 新規追加：{len(added)} 件")
             for f in added:
                 append_new_row(sheet, now_str, f, '新規')
-                print(f"    - {f.get('fileName','')} → 新規行追加（黒文字）")
+                print(f"    - {f.get('fileName','')} → 新規行追加")
 
         if not (deleted or renamed or added):
             print("  変更なし（削除・名前変更・追加は検出されませんでした）")
