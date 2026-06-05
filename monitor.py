@@ -5,7 +5,6 @@
 # 【セキュリティ】GAS_SECRET_TOKEN によるトークン検証付き
 # ============================================================
 
-# ── ライブラリのインストール ──────────────────────────────────
 import subprocess
 subprocess.run(['pip', 'install', '--quiet', 'gspread', 'google-auth',
                 'google-api-python-client'], check=True)
@@ -19,7 +18,6 @@ import os
 import urllib.request
 
 # ── タイムゾーン（JST）──────────────────────────────────────
-# GitHub Actions は UTC で動作するため、全ての時刻表示をここで JST に統一する
 JST = timezone(timedelta(hours=9))
 
 # ── 認証（サービスアカウント）────────────────────────────────
@@ -35,9 +33,9 @@ drive_service = build('drive', 'v3', credentials=creds)
 
 # ── 設定値（環境変数 or デフォルト値）────────────────────────
 FOLDER_ID        = os.environ.get('FOLDER_ID',      '1m7VuFYKcticG68MkGG8yT6u2NA8K-TES')
-SPREADSHEET_ID   = os.environ.get('SPREADSHEET_ID', '10Vk6dpy9oRhBIemXokDbb5KY3-7tpM6acPLGOYDqoDk')
-GAS_MAIL_URL     = os.environ['GAS_MAIL_URL']         # GAS WebアプリのURL（必須）
-GAS_SECRET_TOKEN = os.environ['GAS_SECRET_TOKEN']     # 不正アクセス防止トークン（必須）
+SPREADSHEET_ID   = os.environ.get('SPREADSHEET_ID', '146fJr4d1TL1PWx_jGwNpznNzqp5Q_BwBH2_jutdjuhs')
+GAS_MAIL_URL     = os.environ['GAS_MAIL_URL']
+GAS_SECRET_TOKEN = os.environ['GAS_SECRET_TOKEN']
 EMAIL_TO         = os.environ.get('EMAIL_TO', 'yukimgidai2020@gmail.com')
 HISTORY_SHEET    = '削除or名前変更履歴'
 FILELIST_SHEET   = 'ファイルリスト'
@@ -61,7 +59,6 @@ def get_all_files(folder_id, folder_path, result=None):
     if result is None:
         result = []
 
-    # ファイル取得（ページング対応）
     page_token = None
     while True:
         response = drive_service.files().list(
@@ -77,7 +74,6 @@ def get_all_files(folder_id, folder_path, result=None):
         if not page_token:
             break
 
-    # サブフォルダを再帰処理（ページング対応）
     sub_page_token = None
     while True:
         sub_response = drive_service.files().list(
@@ -130,18 +126,12 @@ def record_deletion_history(spreadsheet, deleted_files):
     print(f"  履歴シートに {len(deleted_files)} 件記録しました")
 
 # ── メール送信（GAS Webアプリ経由・トークン検証付き）──────────
-# -----------------------------------------------------------------
-# サービスアカウントはGmailを直接送信できないため、
-# GAS（Google Apps Script）のWebアプリをHTTP経由で呼び出す。
-# GAS_SECRET_TOKEN をリクエストに含め、GAS側で検証することで
-# URLを知らない第三者からの不正な呼び出しを防止する。
-# -----------------------------------------------------------------
 def send_email(deleted_files):
     body = '以下のファイルが削除or名前変更されました:\n' + '\n'.join(
         f"  {f['fileName']}（フォルダ: {f['folderPath']}）" for f in deleted_files
     )
     payload = json.dumps({
-        'token':   GAS_SECRET_TOKEN,   # ★ トークンをリクエストに含める
+        'token':   GAS_SECRET_TOKEN,
         'to':      EMAIL_TO,
         'subject': 'ファイルが削除or名前変更されました',
         'body':    body,
@@ -182,7 +172,7 @@ def monitor_folder():
         print("  前回リストなし → 今回のリストを初回保存します")
     else:
         print(f"  前回のファイル数：{len(previous_files)} 件")
-        current_set  = {(f['fileName'], f['folderPath']) for f in current_files}
+        current_set   = {(f['fileName'], f['folderPath']) for f in current_files}
         deleted_files = [f for f in previous_files
                          if (f['fileName'], f['folderPath']) not in current_set]
 
