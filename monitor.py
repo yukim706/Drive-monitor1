@@ -183,7 +183,7 @@ def get_or_create_sheet(spreadsheet, sheet_name):
 EXPAND_ROWS = 1000
 
 def ensure_rows(sheet, rows_needed):
-    current_rows = sheet.rowcount
+    current_rows = sheet.row_count
     used_rows    = len(sheet.get_all_values())
     if used_rows + rows_needed > current_rows:
         new_total = current_rows + max(EXPAND_ROWS, rows_needed)
