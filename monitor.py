@@ -10,6 +10,7 @@
 # 【D列URL】ハイパーリンク付き・URL表示（タップで開く）
 # 【G列】フォルダURL（ハイパーリンク付き）
 # 【行数】不足時に自動拡張
+# 【FOLDER_ID】スプレッドシート「フォルダ情報」シートのB2セル（URL形式）から取得
 # ============================================================
 
 import subprocess
@@ -39,13 +40,13 @@ creds = Credentials.from_service_account_info(sa_info, scopes=SCOPES)
 gc            = gspread.Client(auth=creds)
 drive_service = build('drive', 'v3', credentials=creds)
 
-# ── 設定値（全てGitHub Secretsから取得）
-FOLDER_ID        = os.environ['FOLDER_ID']
-SPREADSHEET_ID   = os.environ['SPREADSHEET_ID']
-GAS_MAIL_URL     = os.environ['GAS_MAIL_URL']
-GAS_SECRET_TOKEN = os.environ['GAS_SECRET_TOKEN']
-EMAIL_TO         = os.environ['EMAIL_TO']
-FILE_SHEET       = 'ファイル一覧'
+# ── 設定値（GitHub Secretsから取得）
+SPREADSHEET_ID    = os.environ['SPREADSHEET_ID']
+GAS_MAIL_URL      = os.environ['GAS_MAIL_URL']
+GAS_SECRET_TOKEN  = os.environ['GAS_SECRET_TOKEN']
+EMAIL_TO          = os.environ['EMAIL_TO']
+FILE_SHEET        = 'ファイル一覧'
+FOLDER_INFO_SHEET = 'フォルダ情報'
 
 # 列番号定数（1始まり）
 COL_UPDATED     = 1   # A: 更新日時
@@ -122,7 +123,22 @@ def extract_url_from_cell(cell_value):
         return m.group(1) if m else ''
     return cell_value
 
-# ── URLからfileIdを逆引き
+# ── URLからフォルダIDを抽出（folders/ 形式と ?id= 形式に両対応）
+def extract_folder_id_from_url(url):
+    if not url:
+        return None
+    # https://drive.google.com/drive/folders/{id} 形式
+    # https://drive.google.com/drive/u/0/folders/{id} 形式 も同じ正規表現でヒット
+    m = re.search(r'/folders/([a-zA-Z0-9_-]+)', url)
+    if m:
+        return m.group(1)
+    # ?id= 形式
+    m = re.search(r'[?&]id=([a-zA-Z0-9_-]+)', url)
+    if m:
+        return m.group(1)
+    return None
+
+# ── URLからfileIdを逆引き（ファイル用）
 def extract_file_id_from_url(url):
     parts = url.rstrip('/').split('/')
     if 'd' in parts:
@@ -130,6 +146,35 @@ def extract_file_id_from_url(url):
         if idx + 1 < len(parts):
             return parts[idx + 1]
     return None
+
+# ── 「フォルダ情報」シートのB2からFOLDER_IDを取得
+def get_folder_id_from_sheet(spreadsheet):
+    try:
+        info_sheet = spreadsheet.worksheet(FOLDER_INFO_SHEET)
+    except gspread.exceptions.WorksheetNotFound:
+        raise RuntimeError(
+            f"❌ シート「{FOLDER_INFO_SHEET}」が見つかりません。"
+            "スプレッドシートにシートを作成してください。"
+        )
+
+    b2_value = info_sheet.acell('B2').value
+    if not b2_value or not b2_value.strip():
+        raise RuntimeError(
+            f"❌ 「{FOLDER_INFO_SHEET}」シートのB2セルが空です。"
+            "監視対象フォルダのURLを入力してください。"
+        )
+
+    raw_url = extract_url_from_cell(b2_value.strip())
+    folder_id = extract_folder_id_from_url(raw_url)
+    if not folder_id:
+        raise RuntimeError(
+            f"❌ B2セルのURLからフォルダIDを取得できませんでした。\n"
+            f"  入力値：{b2_value}\n"
+            "  例）https://drive.google.com/drive/folders/XXXXXXXXXXXXXXXX"
+        )
+
+    print(f"  📂 監視フォルダID：{folder_id}（B2セルより取得）")
+    return folder_id
 
 # ── Drive API でフォルダ内ファイルを再帰取得
 def get_all_files(folder_id, folder_path, result=None):
@@ -358,11 +403,14 @@ def monitor_folder():
     spreadsheet = gc.open_by_key(SPREADSHEET_ID)
     sheet = get_or_create_sheet(spreadsheet, FILE_SHEET)
 
+    print("\n[0] 監視フォルダURL取得中...")
+    folder_id = get_folder_id_from_sheet(spreadsheet)
+
     print("\n[1] ファイル一覧取得中...")
     root_name = drive_service.files().get(
-        fileId=FOLDER_ID, fields='name'
+        fileId=folder_id, fields='name'
     ).execute().get('name', 'Root')
-    current_files = get_all_files(FOLDER_ID, root_name)
+    current_files = get_all_files(folder_id, root_name)
     print(f"  現在のファイル数：{len(current_files)} 件")
 
     id_to_row = build_id_to_row_map(sheet)
