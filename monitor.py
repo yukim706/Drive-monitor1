@@ -7,7 +7,7 @@
 # 【シート構成】1シート（ファイルリスト兼変更履歴）
 #   A:更新日時 B:ファイル名 C:変更前ファイル名 D:URL E:種別 F:フォルダパス
 # 【文字色】新規=黒 / 削除=赤 / 名前変更=青
-# 【D列URL】ハイパーリンク付き（タップで開く）
+# 【D列URL】ハイパーリンク付き・URL表示（タップで開く）
 # 【行数】不足時に自動拡張
 # ============================================================
 
@@ -58,9 +58,9 @@ TOTAL_COLS     = 6
 HEADERS = ['更新日時', 'ファイル名', '変更前ファイル名', 'URL', '種別', 'フォルダパス']
 
 # ── 文字色定義
-COLOR_BLACK = {'red': 0.0, 'green': 0.0, 'blue': 0.0}  # 新規・正常
-COLOR_RED   = {'red': 1.0, 'green': 0.0, 'blue': 0.0}  # 削除
-COLOR_BLUE  = {'red': 0.0, 'green': 0.0, 'blue': 1.0}  # 名前変更
+COLOR_BLACK = {'red': 0.0, 'green': 0.0, 'blue': 0.0}
+COLOR_RED   = {'red': 1.0, 'green': 0.0, 'blue': 0.0}
+COLOR_BLUE  = {'red': 0.0, 'green': 0.0, 'blue': 1.0}
 
 STATUS_COLOR = {
     '正常':          COLOR_BLACK,
@@ -100,14 +100,12 @@ def build_file_url(file_id, mime_type):
     }
     return urls.get(mime_type, f'https://drive.google.com/file/d/{file_id}/view')
 
-# ── URLをHYPERLINK数式に変換（タップで開く）
-def make_hyperlink(url, label=None):
+# ── URLをHYPERLINK数式に変換（URLをそのまま表示・タップで開く）
+def make_hyperlink(url):
     if not url:
         return ''
-    display = label if label else url
-    url_escaped     = url.replace('"', '""')
-    display_escaped = display.replace('"', '""')
-    return f'=HYPERLINK("{url_escaped}","{display_escaped}")'
+    url_escaped = url.replace('"', '""')
+    return f'=HYPERLINK("{url_escaped}","{url_escaped}")'
 
 # ── セルからURLを取り出す（HYPERLINK数式にも対応）
 def extract_url_from_cell(cell_value):
@@ -218,7 +216,7 @@ def update_row(sheet, row_num, now_str, file_data, status, before_name=''):
         now_str,
         file_data.get('fileName', ''),
         before_name,
-        make_hyperlink(file_data.get('fileUrl', ''), file_data.get('fileName', '')),
+        make_hyperlink(file_data.get('fileUrl', '')),
         status,
         file_data.get('folderPath', ''),
     ]
@@ -232,7 +230,7 @@ def append_new_row(sheet, now_str, file_data, status):
         now_str,
         file_data.get('fileName', ''),
         '',
-        make_hyperlink(file_data.get('fileUrl', ''), file_data.get('fileName', '')),
+        make_hyperlink(file_data.get('fileUrl', '')),
         status,
         file_data.get('folderPath', ''),
     ]
@@ -366,7 +364,7 @@ def monitor_folder():
                 now_str,
                 f.get('fileName', ''),
                 '',
-                make_hyperlink(f.get('fileUrl', ''), f.get('fileName', '')),
+                make_hyperlink(f.get('fileUrl', '')),
                 '正常',
                 f.get('folderPath', ''),
             ])
