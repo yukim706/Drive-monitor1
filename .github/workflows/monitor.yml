@@ -54,5 +54,6 @@ jobs:
           # SPREADSHEET_ID : スプレッドシートID（任意・省略時はスクリプト内デフォルト値）
           GOOGLE_SA_JSON: ${{ secrets.GOOGLE_SA_JSON }}
           GAS_MAIL_URL:   ${{ secrets.GAS_MAIL_URL }}
+          GAS_SECRET_TOKEN: ${{ secrets.GAS_SECRET_TOKEN }}   # ← これを追加
           EMAIL_TO:       ${{ secrets.EMAIL_TO }}
         run: python monitor.py
