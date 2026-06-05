@@ -147,8 +147,8 @@ def extract_file_id_from_url(url):
             return parts[idx + 1]
     return None
 
-# ── 「フォルダ情報」シートのB2からFOLDER_IDを取得
-def get_folder_id_from_sheet(spreadsheet):
+# ── 「フォルダ情報」シートのA2（フォルダ名）・B2（フォルダURL）を取得
+def get_folder_info_from_sheet(spreadsheet):
     try:
         info_sheet = spreadsheet.worksheet(FOLDER_INFO_SHEET)
     except gspread.exceptions.WorksheetNotFound:
@@ -158,6 +158,7 @@ def get_folder_id_from_sheet(spreadsheet):
         )
 
     b2_value = info_sheet.acell('B2').value
+
     if not b2_value or not b2_value.strip():
         raise RuntimeError(
             f"❌ 「{FOLDER_INFO_SHEET}」シートのB2セルが空です。"
@@ -173,8 +174,18 @@ def get_folder_id_from_sheet(spreadsheet):
             "  例）https://drive.google.com/drive/folders/XXXXXXXXXXXXXXXX"
         )
 
-    print(f"  📂 監視フォルダID：{folder_id}（B2セルより取得）")
-    return folder_id
+    # Drive API でフォルダ名を自動取得（失敗時は 'Root' にフォールバック）
+    try:
+        folder_meta = drive_service.files().get(
+            fileId=folder_id, fields='name', supportsAllDrives=True
+        ).execute()
+        folder_name = folder_meta.get('name', 'Root')
+        print(f"  📂 フォルダ名：{folder_name}（Drive APIより自動取得）")
+    except Exception:
+        folder_name = 'Root'
+        print(f"  📂 フォルダ名：{folder_name}（自動取得失敗のためデフォルト値を使用）")
+    print(f"  📂 フォルダID：{folder_id}（B2セルより取得）")
+    return folder_id, folder_name
 
 # ── Drive API でフォルダ内ファイルを再帰取得
 def get_all_files(folder_id, folder_path, result=None):
@@ -403,13 +414,10 @@ def monitor_folder():
     spreadsheet = gc.open_by_key(SPREADSHEET_ID)
     sheet = get_or_create_sheet(spreadsheet, FILE_SHEET)
 
-    print("\n[0] 監視フォルダURL取得中...")
-    folder_id = get_folder_id_from_sheet(spreadsheet)
+    print("\n[0] 監視フォルダ情報取得中...")
+    folder_id, root_name = get_folder_info_from_sheet(spreadsheet)
 
     print("\n[1] ファイル一覧取得中...")
-    root_name = drive_service.files().get(
-        fileId=folder_id, fields='name'
-    ).execute().get('name', 'Root')
     current_files = get_all_files(folder_id, root_name)
     print(f"  現在のファイル数：{len(current_files)} 件")
 
