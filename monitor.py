@@ -3,6 +3,7 @@
 # 【認証方式】サービスアカウント JSON（環境変数 GOOGLE_SA_JSON）
 # 【メール送信】GAS WebアプリへのHTTPリクエスト（環境変数 GAS_MAIL_URL）
 # 【セキュリティ】GAS_SECRET_TOKEN によるトークン検証付き
+# 【検知内容】削除 / 名前変更（何から何へ）/ 新規追加
 # ============================================================
 
 import subprocess
@@ -37,7 +38,7 @@ SPREADSHEET_ID   = os.environ.get('SPREADSHEET_ID', '146fJr4d1TL1PWx_jGwNpznNzqp
 GAS_MAIL_URL     = os.environ['GAS_MAIL_URL']
 GAS_SECRET_TOKEN = os.environ['GAS_SECRET_TOKEN']
 EMAIL_TO         = os.environ.get('EMAIL_TO', 'yukimgidai2020@gmail.com')
-HISTORY_SHEET    = '削除or名前変更履歴'
+HISTORY_SHEET    = '変更履歴'
 FILELIST_SHEET   = 'ファイルリスト'
 
 # ── MIMEタイプ → 拡張子 変換辞書 ─────────────────────────────
@@ -55,6 +56,7 @@ MIME_EXTENSIONS = {
 }
 
 # ── Drive API でフォルダ内ファイルを再帰取得 ──────────────────
+# fileId も取得するようになったため、名前変更の検知が可能
 def get_all_files(folder_id, folder_path, result=None):
     if result is None:
         result = []
@@ -63,13 +65,17 @@ def get_all_files(folder_id, folder_path, result=None):
     while True:
         response = drive_service.files().list(
             q=f"'{folder_id}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false",
-            fields='nextPageToken, files(name, mimeType)',
+            fields='nextPageToken, files(id, name, mimeType)',
             pageSize=1000,
             pageToken=page_token
         ).execute()
         for f in response.get('files', []):
             ext = MIME_EXTENSIONS.get(f['mimeType'], '')
-            result.append({'fileName': f['name'] + ext, 'folderPath': folder_path})
+            result.append({
+                'fileId':     f['id'],
+                'fileName':   f['name'] + ext,
+                'folderPath': folder_path
+            })
         page_token = response.get('nextPageToken')
         if not page_token:
             break
@@ -89,6 +95,34 @@ def get_all_files(folder_id, folder_path, result=None):
             break
 
     return result
+
+# ── 変更の判定（削除 / 名前変更 / 新規追加）──────────────────
+def detect_changes(previous_files, current_files):
+    prev_by_id = {f['fileId']: f for f in previous_files}
+    curr_by_id = {f['fileId']: f for f in current_files}
+
+    deleted = []   # 前回あって今回ない
+    renamed = []   # IDは同じだがファイル名が変わった
+    added   = []   # 今回あって前回ない
+
+    for fid, pf in prev_by_id.items():
+        if fid not in curr_by_id:
+            # IDごと消えた → 削除
+            deleted.append(pf)
+        elif curr_by_id[fid]['fileName'] != pf['fileName']:
+            # IDはあるが名前が変わった → 名前変更
+            renamed.append({
+                'before':     pf['fileName'],
+                'after':      curr_by_id[fid]['fileName'],
+                'folderPath': pf['folderPath']
+            })
+
+    for fid, cf in curr_by_id.items():
+        if fid not in prev_by_id:
+            # 前回なかったIDが増えた → 新規追加
+            added.append(cf)
+
+    return deleted, renamed, added
 
 # ── スプレッドシート操作ヘルパー ──────────────────────────────
 def get_or_create_sheet(spreadsheet, sheet_name, headers=None):
@@ -116,24 +150,77 @@ def save_current_files(spreadsheet, file_list):
     sheet.update(range_name='A1', values=[[json.dumps(file_list, ensure_ascii=False)]])
     print(f"  ファイルリスト保存完了：{len(file_list)} 件")
 
-def record_deletion_history(spreadsheet, deleted_files):
+def record_history(spreadsheet, deleted, renamed, added):
     sheet = get_or_create_sheet(
         spreadsheet, HISTORY_SHEET,
-        headers=['削除or名前変更日時', 'ファイル名', 'フォルダパス']
+        headers=['日時', '種別', 'ファイル名', '詳細', 'フォルダパス']
     )
     timestamp = datetime.now(JST).strftime('%Y/%m/%d %H:%M:%S JST')
-    sheet.append_rows([[timestamp, f['fileName'], f['folderPath']] for f in deleted_files])
-    print(f"  履歴シートに {len(deleted_files)} 件記録しました")
+    rows = []
+
+    for f in deleted:
+        rows.append([timestamp, '❌ 削除', f['fileName'], '', f['folderPath']])
+
+    for f in renamed:
+        rows.append([timestamp, '■ 名前変更', f['before'],
+                     f"→ {f['after']}", f['folderPath']])
+
+    for f in added:
+        rows.append([timestamp, '◉ 新規追加', f['fileName'], '', f['folderPath']])
+
+    if rows:
+        sheet.append_rows(rows)
+        print(f"  履歴シートに {len(rows)} 件記録しました")
+
+# ── メール本文を組み立てる ────────────────────────────────────
+def build_email_body(deleted, renamed, added):
+    lines = []
+
+    if deleted:
+        lines.append('=' * 40)
+        lines.append('❌ 削除されました')
+        lines.append('=' * 40)
+        for f in deleted:
+            lines.append(f"  ・{f['fileName']}")
+            lines.append(f"    フォルダ: {f['folderPath']}")
+
+    if renamed:
+        lines.append('')
+        lines.append('=' * 40)
+        lines.append('■ ファイル名が変更されました')
+        lines.append('=' * 40)
+        for f in renamed:
+            lines.append(f"  ・{f['before']} → {f['after']}")
+            lines.append(f"    フォルダ: {f['folderPath']}")
+
+    if added:
+        lines.append('')
+        lines.append('=' * 40)
+        lines.append('◉ 新規ファイルが追加されました')
+        lines.append('=' * 40)
+        for f in added:
+            lines.append(f"  ・{f['fileName']}")
+            lines.append(f"    フォルダ: {f['folderPath']}")
+
+    lines.append('')
+    lines.append(f"検知日時：{datetime.now(JST).strftime('%Y/%m/%d %H:%M:%S JST')}")
+    return '\n'.join(lines)
 
 # ── メール送信（GAS Webアプリ経由・トークン検証付き）──────────
-def send_email(deleted_files):
-    body = '以下のファイルが削除or名前変更されました:\n' + '\n'.join(
-        f"  {f['fileName']}（フォルダ: {f['folderPath']}）" for f in deleted_files
-    )
+def send_email(deleted, renamed, added):
+    total = len(deleted) + len(renamed) + len(added)
+    parts = []
+    if deleted: parts.append(f'削除{len(deleted)}件')
+    if renamed: parts.append(f'名前変更{len(renamed)}件')
+    if added:   parts.append(f'新規追加{len(added)}件')
+
+    subject = f'【ドライブ監視】{" / ".join(parts)} が検出されました'
+    body    = build_email_body(deleted, renamed, added)
+
     payload = json.dumps({
         'token':   GAS_SECRET_TOKEN,
         'to':      EMAIL_TO,
-        'subject': 'ファイルが削除or名前変更されました',
+        'subject': subject,
         'body':    body,
     }).encode('utf-8')
 
@@ -172,20 +259,30 @@ def monitor_folder():
         print("  前回リストなし → 今回のリストを初回保存します")
     else:
         print(f"  前回のファイル数：{len(previous_files)} 件")
-        current_set   = {(f['fileName'], f['folderPath']) for f in current_files}
-        deleted_files = [f for f in previous_files
-                         if (f['fileName'], f['folderPath']) not in current_set]
+        deleted, renamed, added = detect_changes(previous_files, current_files)
 
-        if deleted_files:
-            print(f"\n  ⚠️ 削除or名前変更：{len(deleted_files)} 件検出")
-            for f in deleted_files:
+        if deleted:
+            print(f"  ❌ 削除：{len(deleted)} 件")
+            for f in deleted:
                 print(f"    - {f['fileName']}（{f['folderPath']}）")
+
+        if renamed:
+            print(f"  ■ 名前変更：{len(renamed)} 件")
+            for f in renamed:
+                print(f"    - {f['before']} → {f['after']}（{f['folderPath']}）")
+
+        if added:
+            print(f"  ◉ 新規追加：{len(added)} 件")
+            for f in added:
+                print(f"    - {f['fileName']}（{f['folderPath']}）")
+
+        if deleted or renamed or added:
             print("\n[3] 履歴シートに記録中...")
-            record_deletion_history(spreadsheet, deleted_files)
+            record_history(spreadsheet, deleted, renamed, added)
             print("\n[4] メール通知送信中...")
-            send_email(deleted_files)
+            send_email(deleted, renamed, added)
         else:
-            print("  変更なし（削除・名前変更は検出されませんでした）")
+            print("  変更なし（削除・名前変更・追加は検出されませんでした）")
 
     print("\n[5] 現在のファイルリストを保存中...")
     save_current_files(spreadsheet, current_files)
