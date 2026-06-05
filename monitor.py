@@ -1,11 +1,3 @@
-# ============================================================
-# Googleドライブ ファイル監視スクリプト（GitHub Actions用）
-# 【認証方式】サービスアカウント JSON（環境変数 GOOGLE_SA_JSON）
-# 【メール送信】GAS WebアプリへのHTTPリクエスト（環境変数 GAS_MAIL_URL）
-# 【セキュリティ】GAS_SECRET_TOKEN によるトークン検証付き
-# 【検知内容】削除 / 名前変更（何から何へ）/ 新規追加
-# ============================================================
-
 import subprocess
 subprocess.run(['pip', 'install', '--quiet', 'gspread', 'google-auth',
                 'google-api-python-client'], check=True)
@@ -18,10 +10,10 @@ import json
 import os
 import urllib.request
 
-# ── タイムゾーン（JST）──────────────────────────────────────
+# ── タイムゾーン（JST）
 JST = timezone(timedelta(hours=9))
 
-# ── 認証（サービスアカウント）────────────────────────────────
+# ── 認証（サービスアカウント）
 SCOPES = [
     'https://www.googleapis.com/auth/drive.readonly',
     'https://www.googleapis.com/auth/spreadsheets',
@@ -32,7 +24,7 @@ creds = Credentials.from_service_account_info(sa_info, scopes=SCOPES)
 gc            = gspread.Client(auth=creds)
 drive_service = build('drive', 'v3', credentials=creds)
 
-# ── 設定値（環境変数 or デフォルト値）────────────────────────
+# ── 設定値
 FOLDER_ID        = os.environ.get('FOLDER_ID',      '1tVQU7ufn_Ob54kspgh88iK03-wUPF7mU')
 SPREADSHEET_ID   = os.environ.get('SPREADSHEET_ID', '146fJr4d1TL1PWx_jGwNpznNzqp5Q_BwBH2_jutdjuhs')
 GAS_MAIL_URL     = os.environ['GAS_MAIL_URL']
@@ -41,7 +33,14 @@ EMAIL_TO         = os.environ.get('EMAIL_TO', 'yukimgidai2020@gmail.com')
 HISTORY_SHEET    = '変更履歴'
 FILELIST_SHEET   = 'ファイルリスト'
 
-# ── MIMEタイプ → 拡張子 変換辞書 ─────────────────────────────
+# ── 曜日（日本語）
+WEEKDAYS_JP = ['月', '火', '水', '木', '金', '土', '日']
+
+def format_datetime_jp(dt):
+    wd = WEEKDAYS_JP[dt.weekday()]
+    return f"{dt.year}年{dt.month}月{dt.day}日({wd}) {dt.strftime('%H:%M')}"
+
+# ── MIMEタイプ → 拡張子
 MIME_EXTENSIONS = {
     'application/vnd.google-apps.document':     '.gdoc',
     'application/vnd.google-apps.spreadsheet':  '.gsheet',
@@ -55,8 +54,17 @@ MIME_EXTENSIONS = {
     'image/png':  '.png',
 }
 
-# ── Drive API でフォルダ内ファイルを再帰取得 ──────────────────
-# fileId も取得するようになったため、名前変更の検知が可能
+# ── MIMEタイプ → URL生成
+def build_file_url(file_id, mime_type):
+    google_apps_url = {
+        'application/vnd.google-apps.document':     f'https://docs.google.com/document/d/{file_id}/edit',
+        'application/vnd.google-apps.spreadsheet':  f'https://docs.google.com/spreadsheets/d/{file_id}/edit',
+        'application/vnd.google-apps.presentation': f'https://docs.google.com/presentation/d/{file_id}/edit',
+        'application/vnd.google-apps.drawing':      f'https://docs.google.com/drawings/d/{file_id}/edit',
+    }
+    return google_apps_url.get(mime_type, f'https://drive.google.com/file/d/{file_id}/view')
+
+# ── Drive API でフォルダ内ファイルを再帰取得
 def get_all_files(folder_id, folder_path, result=None):
     if result is None:
         result = []
@@ -70,10 +78,13 @@ def get_all_files(folder_id, folder_path, result=None):
             pageToken=page_token
         ).execute()
         for f in response.get('files', []):
-            ext = MIME_EXTENSIONS.get(f['mimeType'], '')
+            mime = f['mimeType']
+            ext  = MIME_EXTENSIONS.get(mime, '')
             result.append({
                 'fileId':     f['id'],
                 'fileName':   f['name'] + ext,
+                'mimeType':   mime,
+                'fileUrl':    build_file_url(f['id'], mime),
                 'folderPath': folder_path
             })
         page_token = response.get('nextPageToken')
@@ -96,40 +107,44 @@ def get_all_files(folder_id, folder_path, result=None):
 
     return result
 
-# ── 変更の判定（削除 / 名前変更 / 新規追加）──────────────────
+# ── 変更の判定
 def detect_changes(previous_files, current_files):
     prev_by_id = {f['fileId']: f for f in previous_files}
     curr_by_id = {f['fileId']: f for f in current_files}
 
-    deleted = []   # 前回あって今回ない
-    renamed = []   # IDは同じだがファイル名が変わった
-    added   = []   # 今回あって前回ない
+    deleted = []
+    renamed = []
+    added   = []
 
     for fid, pf in prev_by_id.items():
         if fid not in curr_by_id:
-            # IDごと消えた → 削除
             deleted.append(pf)
         elif curr_by_id[fid]['fileName'] != pf['fileName']:
-            # IDはあるが名前が変わった → 名前変更
+            cf = curr_by_id[fid]
             renamed.append({
-                'before':     pf['fileName'],
-                'after':      curr_by_id[fid]['fileName'],
-                'folderPath': pf['folderPath']
+                'fileId':     fid,
+                'fileName':   cf['fileName'],
+                'beforeName': pf['fileName'],
+                'fileUrl':    cf.get('fileUrl', ''),
+                'folderPath': pf['folderPath'],
             })
 
     for fid, cf in curr_by_id.items():
         if fid not in prev_by_id:
-            # 前回なかったIDが増えた → 新規追加
             added.append(cf)
 
     return deleted, renamed, added
 
-# ── スプレッドシート操作ヘルパー ──────────────────────────────
+# ── スプレッドシート操作ヘルパー
 def get_or_create_sheet(spreadsheet, sheet_name, headers=None):
     try:
-        return spreadsheet.worksheet(sheet_name)
+        ws = spreadsheet.worksheet(sheet_name)
+        # ヘッダーが1行もない場合は書き込む
+        if headers and ws.row_count == 0:
+            ws.append_row(headers)
+        return ws
     except gspread.exceptions.WorksheetNotFound:
-        sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1, cols=10)
+        sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=10)
         if headers:
             sheet.append_row(headers)
         return sheet
@@ -151,64 +166,100 @@ def save_current_files(spreadsheet, file_list):
     print(f"  ファイルリスト保存完了：{len(file_list)} 件")
 
 def record_history(spreadsheet, deleted, renamed, added):
+    """
+    A: 年月日・時間　B: ファイル名　C: 変更前ファイル名
+    D: URL　E: フォルダ名　F: 種別
+    """
     sheet = get_or_create_sheet(
         spreadsheet, HISTORY_SHEET,
-        headers=['日時', '種別', 'ファイル名', '詳細', 'フォルダパス']
+        headers=['年月日・時間', 'ファイル名', '変更前ファイル名', 'URL', 'フォルダ名', '種別']
     )
-    timestamp = datetime.now(JST).strftime('%Y/%m/%d %H:%M:%S JST')
+
+    # ヘッダー行がなければ追加
+    existing = sheet.get_all_values()
+    if not existing:
+        sheet.append_row(['年月日・時間', 'ファイル名', '変更前ファイル名', 'URL', 'フォルダ名', '種別'])
+
+    now_str = format_datetime_jp(datetime.now(JST))
     rows = []
 
     for f in deleted:
-        rows.append([timestamp, '❌ 削除', f['fileName'], '', f['folderPath']])
+        rows.append([
+            now_str,
+            f.get('fileName', ''),
+            '',
+            f.get('fileUrl', ''),
+            f.get('folderPath', ''),
+            '削除',
+        ])
 
     for f in renamed:
-        rows.append([timestamp, '■ 名前変更', f['before'],
-                     f"→ {f['after']}", f['folderPath']])
+        rows.append([
+            now_str,
+            f.get('fileName', ''),
+            f.get('beforeName', ''),
+            f.get('fileUrl', ''),
+            f.get('folderPath', ''),
+            'ファイル名変更',
+        ])
 
     for f in added:
-        rows.append([timestamp, '◉ 新規追加', f['fileName'], '', f['folderPath']])
+        rows.append([
+            now_str,
+            f.get('fileName', ''),
+            '',
+            f.get('fileUrl', ''),
+            f.get('folderPath', ''),
+            '新規',
+        ])
 
     if rows:
-        sheet.append_rows(rows)
+        sheet.append_rows(rows, value_input_option='USER_ENTERED')
         print(f"  履歴シートに {len(rows)} 件記録しました")
 
-# ── メール本文を組み立てる ────────────────────────────────────
+# ── メール本文
 def build_email_body(deleted, renamed, added):
-    lines = []
+    now_str = format_datetime_jp(datetime.now(JST))
+    lines = [f"検知日時：{now_str}", '']
 
     if deleted:
         lines.append('=' * 40)
-        lines.append('❌ 削除されました')
+        lines.append('❌ 削除')
         lines.append('=' * 40)
         for f in deleted:
-            lines.append(f"  ・{f['fileName']}")
-            lines.append(f"    フォルダ: {f['folderPath']}")
+            lines.append(f"  ファイル名  ：{f.get('fileName', '')}")
+            lines.append(f"  URL        ：{f.get('fileUrl', '（なし）')}")
+            lines.append(f"  フォルダ名 ：{f.get('folderPath', '')}")
+            lines.append(f"  種別       ：削除")
+            lines.append('')
 
     if renamed:
-        lines.append('')
         lines.append('=' * 40)
-        lines.append('■ ファイル名が変更されました')
+        lines.append('■ ファイル名変更')
         lines.append('=' * 40)
         for f in renamed:
-            lines.append(f"  ・{f['before']} → {f['after']}")
-            lines.append(f"    フォルダ: {f['folderPath']}")
+            lines.append(f"  ファイル名      ：{f.get('fileName', '')}")
+            lines.append(f"  変更前ファイル名：{f.get('beforeName', '')}")
+            lines.append(f"  URL            ：{f.get('fileUrl', '（なし）')}")
+            lines.append(f"  フォルダ名     ：{f.get('folderPath', '')}")
+            lines.append(f"  種別           ：ファイル名変更")
+            lines.append('')
 
     if added:
-        lines.append('')
         lines.append('=' * 40)
-        lines.append('◉ 新規ファイルが追加されました')
+        lines.append('◉ 新規追加')
         lines.append('=' * 40)
         for f in added:
-            lines.append(f"  ・{f['fileName']}")
-            lines.append(f"    フォルダ: {f['folderPath']}")
+            lines.append(f"  ファイル名  ：{f.get('fileName', '')}")
+            lines.append(f"  URL        ：{f.get('fileUrl', '（なし）')}")
+            lines.append(f"  フォルダ名 ：{f.get('folderPath', '')}")
+            lines.append(f"  種別       ：新規")
+            lines.append('')
 
-    lines.append('')
-    lines.append(f"検知日時：{datetime.now(JST).strftime('%Y/%m/%d %H:%M:%S JST')}")
     return '\n'.join(lines)
 
-# ── メール送信（GAS Webアプリ経由・トークン検証付き）──────────
+# ── メール送信
 def send_email(deleted, renamed, added):
-    total = len(deleted) + len(renamed) + len(added)
     parts = []
     if deleted: parts.append(f'削除{len(deleted)}件')
     if renamed: parts.append(f'名前変更{len(renamed)}件')
@@ -237,10 +288,10 @@ def send_email(deleted, renamed, added):
     except Exception as e:
         print(f"  ⚠️ メール送信失敗: {e}")
 
-# ── メイン処理 ────────────────────────────────────────────────
+# ── メイン処理
 def monitor_folder():
     print("=" * 50)
-    print(f"監視開始：{datetime.now(JST).strftime('%Y/%m/%d %H:%M:%S JST')}")
+    print(f"監視開始：{format_datetime_jp(datetime.now(JST))}")
     print("=" * 50)
 
     spreadsheet = gc.open_by_key(SPREADSHEET_ID)
@@ -256,7 +307,7 @@ def monitor_folder():
     previous_files = load_previous_files(spreadsheet)
 
     if previous_files is None:
-        print("  前回リストなし → 今回のリストを初回保存します")
+        print("  前回リストなし → 今回のリストを初回保存します（変更検知はしません）")
     else:
         print(f"  前回のファイル数：{len(previous_files)} 件")
         deleted, renamed, added = detect_changes(previous_files, current_files)
@@ -264,17 +315,17 @@ def monitor_folder():
         if deleted:
             print(f"  ❌ 削除：{len(deleted)} 件")
             for f in deleted:
-                print(f"    - {f['fileName']}（{f['folderPath']}）")
+                print(f"    - {f.get('fileName','')}（{f.get('folderPath','')}）")
 
         if renamed:
             print(f"  ■ 名前変更：{len(renamed)} 件")
             for f in renamed:
-                print(f"    - {f['before']} → {f['after']}（{f['folderPath']}）")
+                print(f"    - {f.get('beforeName','')} → {f.get('fileName','')}（{f.get('folderPath','')}）")
 
         if added:
             print(f"  ◉ 新規追加：{len(added)} 件")
             for f in added:
-                print(f"    - {f['fileName']}（{f['folderPath']}）")
+                print(f"    - {f.get('fileName','')}（{f.get('folderPath','')}）")
 
         if deleted or renamed or added:
             print("\n[3] 履歴シートに記録中...")
@@ -289,5 +340,5 @@ def monitor_folder():
     print("\n✅ 監視処理完了")
     print("=" * 50)
 
-# ── 実行 ──────────────────────────────────────────────────────
+# ── 実行
 monitor_folder()
