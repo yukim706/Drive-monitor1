@@ -5,7 +5,7 @@
 # 【セキュリティ】GAS_SECRET_TOKEN によるトークン検証付き
 # 【検知内容】削除 / 名前変更 / 新規追加
 # 【シート構成】1シート（ファイルリスト兼変更履歴）
-#   A:更新日時 B:ファイル名 C:変更前ファイル名 D:ファイルID E:種別 F:フォルダパス
+#   A:更新日時 B:ファイル名 C:変更前ファイル名 D:URL E:ファイルID F:種別 G:フォルダパス
 # ============================================================
 
 import subprocess
@@ -13,7 +13,6 @@ subprocess.run(['pip', 'install', '--quiet', 'gspread', 'google-auth',
                 'google-api-python-client'], check=True)
 
 import gspread
-from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from datetime import datetime, timezone, timedelta
@@ -47,12 +46,13 @@ FILE_SHEET       = 'ファイル一覧'
 COL_UPDATED    = 1   # A: 更新日時
 COL_FILENAME   = 2   # B: ファイル名
 COL_BEFORE     = 3   # C: 変更前ファイル名
-COL_FILEID     = 4   # D: ファイルID
-COL_STATUS     = 5   # E: 種別
-COL_FOLDERPATH = 6   # F: フォルダパス
-TOTAL_COLS     = 6
+COL_FILEURL    = 4   # D: URL
+COL_FILEID     = 5   # E: ファイルID
+COL_STATUS     = 6   # F: 種別
+COL_FOLDERPATH = 7   # G: フォルダパス
+TOTAL_COLS     = 7
 
-HEADERS = ['更新日時', 'ファイル名', '変更前ファイル名', 'ファイルID', '種別', 'フォルダパス']
+HEADERS = ['更新日時', 'ファイル名', '変更前ファイル名', 'URL', 'ファイルID', '種別', 'フォルダパス']
 
 # ── 曜日（日本語）
 WEEKDAYS_JP = ['月', '火', '水', '木', '金', '土', '日']
@@ -137,9 +137,8 @@ def get_or_create_sheet(spreadsheet, sheet_name):
         sheet.append_row(HEADERS)
         return sheet
 
-# ── シートから fileId → 行番号 の辞書を作成
+# ── シートから fileId → 行番号 の辞書を作成（E列＝COL_FILEID=5）
 def build_id_to_row_map(sheet):
-    """D列(COL_FILEID=4)のfileIdをキーに行番号を返す辞書"""
     all_values = sheet.get_all_values()
     id_to_row = {}
     for i, row in enumerate(all_values):
@@ -149,17 +148,18 @@ def build_id_to_row_map(sheet):
             id_to_row[row[COL_FILEID - 1]] = i + 1  # 1始まり行番号
     return id_to_row
 
-# ── 行を上書き更新
+# ── 行を上書き更新（A:更新日時 B:ファイル名 C:変更前 D:URL E:ファイルID F:種別 G:フォルダパス）
 def update_row(sheet, row_num, now_str, file_data, status, before_name=''):
     values = [
         now_str,
         file_data.get('fileName', ''),
         before_name,
+        file_data.get('fileUrl', ''),
         file_data.get('fileId', ''),
         status,
         file_data.get('folderPath', ''),
     ]
-    range_str = f'A{row_num}:F{row_num}'
+    range_str = f'A{row_num}:G{row_num}'
     sheet.update(range_name=range_str, values=[values])
 
     # 削除の場合は行全体を赤文字にする
@@ -170,7 +170,7 @@ def update_row(sheet, row_num, now_str, file_data, status, before_name=''):
             }
         })
     else:
-        # 削除以外は黒文字に戻す（以前削除→復活した場合への対応）
+        # 削除以外は黒文字に戻す
         sheet.format(range_str, {
             'textFormat': {
                 'foregroundColor': {'red': 0.0, 'green': 0.0, 'blue': 0.0}
@@ -183,6 +183,7 @@ def append_new_row(sheet, now_str, file_data, status):
         now_str,
         file_data.get('fileName', ''),
         '',
+        file_data.get('fileUrl', ''),
         file_data.get('fileId', ''),
         status,
         file_data.get('folderPath', ''),
@@ -228,6 +229,7 @@ def build_email_body(deleted, renamed, added):
         for f in deleted:
             lines += [
                 f"  ファイル名  ：{f.get('fileName', '')}",
+                f"  URL        ：{f.get('fileUrl', '')}",
                 f"  フォルダパス：{f.get('folderPath', '')}",
                 f"  種別       ：削除", ''
             ]
@@ -238,6 +240,7 @@ def build_email_body(deleted, renamed, added):
             lines += [
                 f"  ファイル名      ：{f.get('fileName', '')}",
                 f"  変更前ファイル名：{f.get('beforeName', '')}",
+                f"  URL            ：{f.get('fileUrl', '')}",
                 f"  フォルダパス   ：{f.get('folderPath', '')}",
                 f"  種別           ：ファイル名変更", ''
             ]
@@ -247,6 +250,7 @@ def build_email_body(deleted, renamed, added):
         for f in added:
             lines += [
                 f"  ファイル名  ：{f.get('fileName', '')}",
+                f"  URL        ：{f.get('fileUrl', '')}",
                 f"  フォルダパス：{f.get('folderPath', '')}",
                 f"  種別       ：新規", ''
             ]
@@ -316,6 +320,7 @@ def monitor_folder():
                 now_str,
                 f.get('fileName', ''),
                 '',
+                f.get('fileUrl', ''),
                 f.get('fileId', ''),
                 '正常',
                 f.get('folderPath', ''),
@@ -330,7 +335,7 @@ def monitor_folder():
         # ────────────────────────────────────────
         print("\n[2] 前回リストと比較中...")
 
-        # 前回データをシートから再構築（fileId → fileInfo）
+        # 前回データをシートから再構築（E列のfileIdを使用）
         all_values = sheet.get_all_values()
         previous_files = []
         for i, row in enumerate(all_values):
@@ -339,12 +344,11 @@ def monitor_folder():
             if len(row) >= COL_FILEID and row[COL_FILEID - 1]:
                 previous_files.append({
                     'fileId':     row[COL_FILEID - 1],
-                    'fileName':   row[COL_FILENAME - 1] if len(row) >= COL_FILENAME else '',
+                    'fileName':   row[COL_FILENAME - 1]   if len(row) >= COL_FILENAME   else '',
                     'folderPath': row[COL_FOLDERPATH - 1] if len(row) >= COL_FOLDERPATH else '',
                 })
 
         deleted, renamed, added = detect_changes(previous_files, current_files)
-        curr_by_id = {f['fileId']: f for f in current_files}
 
         # 削除
         if deleted:
