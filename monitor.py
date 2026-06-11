@@ -240,20 +240,23 @@ def update_row(sheet, row_num, now_str, file_data, status, before_name=''):
     # シートにデータをかきこむ
     sheet.update(range_name=range_str, values=[values])
 
-    # 削除のときは行全体を赤文字にする（ひとめでわかるように）
+    # 種別によって文字の色をかえる
     if status == '削除':
-        sheet.format(range_str, {
-            'textFormat': {
-                'foregroundColor': {'red': 1.0, 'green': 0.0, 'blue': 0.0}  # 赤色
-            }
-        })
+        # 削除 → 赤文字
+        color = {'red': 1.0, 'green': 0.0, 'blue': 0.0}
+    elif status == 'ファイル名変更':
+        # 名前変更 → 青文字
+        color = {'red': 0.0, 'green': 0.0, 'blue': 1.0}
     else:
-        # 削除以外は黒文字にもどす（まえに赤くなっていたばあいのため）
-        sheet.format(range_str, {
-            'textFormat': {
-                'foregroundColor': {'red': 0.0, 'green': 0.0, 'blue': 0.0}  # 黒色
-            }
-        })
+        # それ以外（正常・新規など）→ 黒文字
+        color = {'red': 0.0, 'green': 0.0, 'blue': 0.0}
+
+    # きめた色でシートの行をいろづけする
+    sheet.format(range_str, {
+        'textFormat': {
+            'foregroundColor': color
+        }
+    })
 
 # ── 新規行を追加
 # あたらしいファイルのじょうほうをシートのさいごについかするかんすう
@@ -270,6 +273,15 @@ def append_new_row(sheet, now_str, file_data, status):
     ]
     # シートのさいごにあたらしい行をくわえる
     sheet.append_row(row, value_input_option='USER_ENTERED')
+
+    # くわえた行のぎょうばんごうをもとめる（さいごの行）
+    last_row = len(sheet.get_all_values())
+    # 新規追加 → 黒文字（まえに色がついていたばあいにそなえてかならず黒にする）
+    sheet.format(f'A{last_row}:G{last_row}', {
+        'textFormat': {
+            'foregroundColor': {'red': 0.0, 'green': 0.0, 'blue': 0.0}  # 黒色
+        }
+    })
 
 # ── 変更の判定
 # 「まえのファイル一覧」と「いまのファイル一覧」をくらべて、変化をみつけるかんすう
@@ -449,6 +461,16 @@ def monitor_folder():
         # データがあればシートにまとめてかきこむ
         if rows:
             sheet.append_rows(rows, value_input_option='USER_ENTERED')
+            # くわえた行のさいごのぎょうばんごうをもとめる
+            last_row = len(sheet.get_all_values())
+            # くわえたぎょうのはんいをもとめる（2行目からさいごの行まで）
+            first_row = last_row - len(rows) + 1
+            # 初回登録はぜんぶ黒文字にする
+            sheet.format(f'A{first_row}:G{last_row}', {
+                'textFormat': {
+                    'foregroundColor': {'red': 0.0, 'green': 0.0, 'blue': 0.0}  # 黒色
+                }
+            })
         print(f"  {len(rows)} 件を登録しました")
 
     else:
